@@ -98,6 +98,8 @@ async def post_coding_cli_install(
         task_id = await service.start_install(spec, body.tag)
     except InstallBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"task_id": task_id, "cli": spec.id, "tag": body.tag}
 
 

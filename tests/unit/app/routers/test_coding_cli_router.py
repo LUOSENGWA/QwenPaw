@@ -172,6 +172,58 @@ def test_install_lifecycle(client) -> None:
     assert res.json()["state"] == "success"
 
 
+def test_install_nightly_tag_uses_dist_tag(client) -> None:
+    """A dist-tag like ``nightly`` must be appended as ``pkg@nightly``,
+    not silently dropped to latest."""
+    from qwenpaw.coding_cli.registry import get_cli
+
+    service = client.app.state.coding_cli_service
+    spec = get_cli("qwen-code")
+    calls: list = []
+
+    def fake_run(cmd, timeout=30.0):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="qwen 0.25.0", stderr="")
+
+    import asyncio
+
+    async def drive() -> None:
+        task_id = await service.start_install(spec, "nightly")
+        for _ in range(100):
+            task = service.install_status(task_id)
+            if task and task["state"] != "running":
+                return
+            await asyncio.sleep(0.02)
+
+    with patch.object(
+        CodingCliService,
+        "_run",
+        staticmethod(fake_run),
+    ), patch.object(CodingCliService, "_installable", return_value=True):
+        asyncio.run(drive())
+
+    assert ("npm", "install", "-g", "@qwen-code/qwen-code@nightly") in calls
+
+
+def test_install_invalid_tag_400(client) -> None:
+    res = client.post(
+        "/api/coding-cli/qwen-code/install",
+        json={"tag": "latest; rm -rf /"},
+    )
+    assert res.status_code == 400
+
+
+def test_opencode_auth_probe_without_settings_file(client, tmp_path) -> None:
+    """opencode keeps credentials in auth.json; the probe must report
+    configured=True even when opencode.json does not exist."""
+    auth_dir = tmp_path / ".local/share/opencode"
+    auth_dir.mkdir(parents=True)
+    (auth_dir / "auth.json").write_text("{}")
+    res = client.get("/api/coding-cli")
+    items = {item["id"]: item for item in res.json()["clis"]}
+    assert items["opencode"]["auth"]["configured"] is True
+
+
 def test_install_busy_409(client) -> None:
     service = client.app.state.coding_cli_service
     service._busy.add("qwen-code")

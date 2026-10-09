@@ -18,6 +18,9 @@ _LOG_TAIL_LIMIT = 4096
 
 _VERSION_RE = re.compile(r"(\d+\.\d+\.\d+[\w.-]*)")
 
+#: npm dist-tags and version strings look like this (no shell/space chars).
+_VALID_TAG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
 
 class InstallBusyError(RuntimeError):
     """Raised when an install task for the CLI is already running."""
@@ -111,15 +114,24 @@ class CodingCliService:
                 spec,
             ),
         }
-        proc = await asyncio.to_thread(self._run, (spec.bin_name, "--version"))
+        # Probes must stay snappy for the UI: a version check that takes
+        # longer than 10s is treated as "not installed", not waited on.
+        proc = await asyncio.to_thread(
+            self._run,
+            (spec.bin_name, "--version"),
+            10.0,
+        )
         if proc is not None and proc.returncode == 0:
             info["installed"] = True
             match = _VERSION_RE.search(proc.stdout or "")
             if match:
                 info["version"] = match.group(1)
         settings = await asyncio.to_thread(self._load_settings, spec)
+        # Always evaluate auth: for CLIs whose credentials live in separate
+        # files (e.g. opencode) the settings file may be absent while the
+        # credentials are present.
+        info["auth"]["configured"] = _auth_configured(spec, settings or {})
         if settings is not None:
-            info["auth"]["configured"] = _auth_configured(spec, settings)
             auth = _get_dot_path(settings, "security.auth")
             if isinstance(auth, dict):
                 info["auth"]["type"] = auth.get("selectedType")
@@ -132,7 +144,7 @@ class CodingCliService:
         return all(which(binary) for binary in spec.requires)
 
     @staticmethod
-    def _run(cmd: tuple[str, ...]) -> Any:
+    def _run(cmd: tuple[str, ...], timeout: float = 30.0) -> Any:
         import subprocess
 
         try:
@@ -140,7 +152,7 @@ class CodingCliService:
                 list(cmd),
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=timeout,
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):
@@ -197,7 +209,13 @@ class CodingCliService:
     # -- install ---------------------------------------------------------
 
     async def start_install(self, spec: CliSpec, tag: str) -> str:
-        """Start an async npm install/upgrade; return task id."""
+        """Start an async npm install/upgrade; return task id.
+
+        ``tag`` may be an npm dist-tag (``latest``, ``nightly``) or a
+        concrete version string (``0.25.0``); anything else is rejected.
+        """
+        if not _VALID_TAG_RE.fullmatch(tag):
+            raise ValueError(f"Invalid install tag: {tag!r}")
         if spec.id in self._busy:
             raise InstallBusyError(
                 f"An install task for {spec.id} is already running",
@@ -230,11 +248,10 @@ class CodingCliService:
                 raise RuntimeError(
                     "npm is not available in this worker",
                 )
-            version_ref = (
-                spec.npm_package
-                if tag_is_channel(task["tag"])
-                else f"{spec.npm_package}@{task['tag']}"
-            )
+            # ``npm install -g pkg@<tag>`` accepts dist-tags (latest,
+            # nightly) and concrete versions (0.25.0) uniformly, so the
+            # tag is always appended explicitly.
+            version_ref = f"{spec.npm_package}@{task['tag']}"
             proc = await asyncio.to_thread(
                 self._run,
                 ("npm", "install", "-g", version_ref),
@@ -274,18 +291,8 @@ class CodingCliService:
         return None
 
 
-def tag_is_channel(tag: str) -> bool:
-    """True for dist-tag style values (latest/nightly), False for
-    concrete version strings like ``0.25.0``."""
-    return re.fullmatch(r"[a-z0-9-]+", tag) is not None and not re.fullmatch(
-        r"\d+\.\d+\.\d+[\w.-]*",
-        tag,
-    )
-
-
 __all__ = [
     "CodingCliService",
     "InstallBusyError",
     "redact_settings",
-    "tag_is_channel",
 ]
