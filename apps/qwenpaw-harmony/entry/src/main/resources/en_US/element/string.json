@@ -1,0 +1,548 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "QwenPaw HarmonyOS entry module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "QwenPaw for HarmonyOS"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "QwenPaw"
+    },
+    {
+      "name": "camera_reason",
+      "value": "Used to scan QwenPaw pairing codes (qwenpaw://pair QR)"
+    },
+    {
+      "name": "tab_chats",
+      "value": "Chats"
+    },
+    {
+      "name": "tab_agents",
+      "value": "Agents"
+    },
+    {
+      "name": "tab_community",
+      "value": "Community"
+    },
+    {
+      "name": "tab_workbench",
+      "value": "Workbench"
+    },
+    {
+      "name": "menu_settings",
+      "value": "Settings"
+    },
+    {
+      "name": "about_title",
+      "value": "About QwenPaw"
+    },
+    {
+      "name": "about_message",
+      "value": "QwenPaw HarmonyOS · Phase 1\nVersion 1.0.0\nBundle io.agentscope.qwenpaw.mobile\nRelay contract v0.1.0\nLAN direct · Chats / Agents / Community / Workbench"
+    },
+    {
+      "name": "settings_title",
+      "value": "Settings"
+    },
+    {
+      "name": "settings_theme",
+      "value": "Theme color"
+    },
+    {
+      "name": "settings_theme_hint",
+      "value": "Matches QwenPaw console theme presets; selection applies to tab highlight and the immersive finger-follow glow"
+    },
+    {
+      "name": "agents_loading",
+      "value": "Loading agents…"
+    },
+    {
+      "name": "agents_empty",
+      "value": "Not connected to a QwenPaw service.\nConnect on the Chats tab first."
+    },
+    {
+      "name": "agents_none",
+      "value": "Service online, but no agents configured yet."
+    },
+    {
+      "name": "agents_current_eyebrow",
+      "value": "Active Agent"
+    },
+    {
+      "name": "agents_current_follow",
+      "value": " · New chats and Workbench use this Agent"
+    },
+    {
+      "name": "agents_connected",
+      "value": "Connected"
+    },
+    {
+      "name": "agents_search_placeholder",
+      "value": "Search Agents"
+    },
+    {
+      "name": "agents_all",
+      "value": "All Agents"
+    },
+    {
+      "name": "agents_active_badge",
+      "value": "Active"
+    },
+    {
+      "name": "agents_switch_failed",
+      "value": "Unable to switch agent"
+    },
+    {
+      "name": "agents_search_empty",
+      "value": "No matching Agents"
+    },
+    {
+      "name": "agents_search_empty_copy",
+      "value": "Try another keyword or create a new QwenPaw."
+    },
+    {
+      "name": "agents_fallback_desc",
+      "value": "QwenPaw Agent"
+    },
+    {
+      "name": "community_title",
+      "value": "Community"
+    },
+    {
+      "name": "community_desc",
+      "value": "Node community content lands in phase 2:\nnode discovery / shared workspaces / cross-machine collaboration."
+    },
+    {
+      "name": "workbench_title",
+      "value": "Workbench"
+    },
+    {
+      "name": "workbench_conn",
+      "value": "Connection & settings"
+    },
+    {
+      "name": "workbench_conn_hint",
+      "value": "Connection · Theme color · Protocol self-test"
+    },
+    {
+      "name": "workbench_about",
+      "value": "About QwenPaw"
+    },
+    {
+      "name": "workbench_approvals",
+      "value": "Approvals"
+    },
+    {
+      "name": "workbench_approvals_hint",
+      "value": "Phase 1: Approval Inbox coming soon"
+    },
+    {
+      "name": "wb_connected",
+      "value": "Connected"
+    },
+    {
+      "name": "wb_not_connected",
+      "value": "Not connected"
+    },
+    {
+      "name": "mine_title",
+      "value": "About & self-test"
+    },
+    {
+      "name": "mine_protocol",
+      "value": "Relay protocol version"
+    },
+    {
+      "name": "mine_contract",
+      "value": "Contract version"
+    },
+    {
+      "name": "mine_operations",
+      "value": "Relay operations"
+    },
+    {
+      "name": "mine_frame",
+      "value": "Frame format"
+    },
+    {
+      "name": "mine_run",
+      "value": "Run protocol self-test (7 items)"
+    },
+    {
+      "name": "mine_frame_value",
+      "value": "4B big-endian length + stable JSON head + payload"
+    },
+    {
+      "name": "mine_footer",
+      "value": "Connection: Chats tab · Agent list: Agents tab · Approvals: Workbench"
+    },
+    {
+      "name": "cp_title",
+      "value": "Connect to QwenPaw"
+    },
+    {
+      "name": "cp_status_disconnected",
+      "value": "Not connected"
+    },
+    {
+      "name": "cp_status_connecting",
+      "value": "Connecting…"
+    },
+    {
+      "name": "cp_status_connected",
+      "value": "Connected"
+    },
+    {
+      "name": "cp_status_failed",
+      "value": "Connection failed"
+    },
+    {
+      "name": "cp_agents_unit",
+      "value": " agents"
+    },
+    {
+      "name": "cp_service_url",
+      "value": "Service address"
+    },
+    {
+      "name": "cp_url_placeholder",
+      "value": "http://192.168.x.x:8088, or paste a qwenpaw://pair code"
+    },
+    {
+      "name": "cp_ticket",
+      "value": "Pairing code (optional)"
+    },
+    {
+      "name": "cp_ticket_placeholder",
+      "value": "Leave blank for direct connect if auth is disabled"
+    },
+    {
+      "name": "cp_connect",
+      "value": "Connect"
+    },
+    {
+      "name": "cp_scan",
+      "value": "Scan to pair"
+    },
+    {
+      "name": "cp_hint",
+      "value": "The QwenPaw service must be on the same LAN, started with --host 0.0.0.0."
+    },
+    {
+      "name": "cp_mode_open",
+      "value": "Open mode"
+    },
+    {
+      "name": "cp_mode_paired",
+      "value": "Paired"
+    },
+    {
+      "name": "cp_user",
+      "value": "User"
+    },
+    {
+      "name": "cp_agents",
+      "value": "Agents"
+    },
+    {
+      "name": "cp_sse_next",
+      "value": "Chat list lands next (SSE streaming)"
+    },
+    {
+      "name": "cp_reconnect",
+      "value": "Reconnect"
+    },
+    {
+      "name": "cp_disconnect",
+      "value": "Disconnect"
+    },
+    {
+      "name": "cp_err_no_camera",
+      "value": "Camera permission not granted. Enter address and pairing code manually."
+    },
+    {
+      "name": "cp_err_scan_invalid",
+      "value": "Scanned content is not a valid QwenPaw pairing code"
+    },
+    {
+      "name": "cp_err_scan_cancel",
+      "value": "Scan canceled or failed."
+    },
+    {
+      "name": "notify_reason",
+      "value": "System notification when approvals are pending"
+    },
+    {
+      "name": "notify_approval_title",
+      "value": "QwenPaw Approval"
+    },
+    {
+      "name": "notify_approval_body",
+      "value": "%d approval(s) awaiting review"
+    },
+    {
+      "name": "wb_approvals_has",
+      "value": "%d pending"
+    },
+    {
+      "name": "wb_approvals_none",
+      "value": "No pending approvals"
+    },
+    {
+      "name": "wb_approvals_more",
+      "value": "and %d more"
+    },
+    {
+      "name": "cp_chats_title",
+      "value": "Chats"
+    },
+    {
+      "name": "cp_chats_loading",
+      "value": "Loading chats…"
+    },
+    {
+      "name": "cp_chats_empty",
+      "value": "No chats yet"
+    },
+    {
+      "name": "cp_chat_pinned",
+      "value": "Pinned"
+    },
+    {
+      "name": "chat_title",
+      "value": "Chat"
+    },
+    {
+      "name": "chat_input_placeholder",
+      "value": "Message…"
+    },
+    {
+      "name": "chat_send",
+      "value": "Send"
+    },
+    {
+      "name": "chat_stop",
+      "value": "Stop"
+    },
+    {
+      "name": "chat_loading",
+      "value": "Loading chat…"
+    },
+    {
+      "name": "chat_no_conn",
+      "value": "Not connected. Connect QwenPaw on the Chats tab first."
+    },
+    {
+      "name": "chat_kind_reasoning",
+      "value": "Reasoning"
+    },
+    {
+      "name": "chat_kind_tool",
+      "value": "Tool"
+    },
+    {
+      "name": "agents_menu_more",
+      "value": "More actions"
+    },
+    {
+      "name": "agents_menu_copy",
+      "value": "Duplicate"
+    },
+    {
+      "name": "agents_menu_pin",
+      "value": "Pin"
+    },
+    {
+      "name": "agents_menu_unpin",
+      "value": "Unpin"
+    },
+    {
+      "name": "agents_menu_enable",
+      "value": "Enable"
+    },
+    {
+      "name": "agents_menu_disable",
+      "value": "Disable"
+    },
+    {
+      "name": "agents_menu_delete",
+      "value": "Delete"
+    },
+    {
+      "name": "agents_delete_title",
+      "value": "Delete Agent"
+    },
+    {
+      "name": "agents_delete_msg",
+      "value": "This removes the Agent and its workspace. This cannot be undone."
+    },
+    {
+      "name": "common_cancel",
+      "value": "Cancel"
+    },
+    {
+      "name": "common_confirm_delete",
+      "value": "Delete"
+    },
+    {
+      "name": "common_save",
+      "value": "Save"
+    },
+    {
+      "name": "agents_create_title",
+      "value": "Create Agent"
+    },
+    {
+      "name": "agents_copy_title",
+      "value": "Duplicate Agent"
+    },
+    {
+      "name": "agents_form_name",
+      "value": "Name"
+    },
+    {
+      "name": "agents_form_id",
+      "value": "Agent ID (optional, auto-generated)"
+    },
+    {
+      "name": "agents_form_desc",
+      "value": "Description (optional)"
+    },
+    {
+      "name": "agents_form_workspace",
+      "value": "Workspace path (optional)"
+    },
+    {
+      "name": "agents_form_copy_md",
+      "value": "Copy prompts and memory files"
+    },
+    {
+      "name": "agents_form_copy_skills",
+      "value": "Copy Skills"
+    },
+    {
+      "name": "agents_form_copy_jobs",
+      "value": "Copy Cron Jobs"
+    },
+    {
+      "name": "agents_profile_title",
+      "value": "Avatar & Nickname"
+    },
+    {
+      "name": "agents_profile_name",
+      "value": "Nickname (empty = server name)"
+    },
+    {
+      "name": "agents_profile_color",
+      "value": "Avatar color"
+    },
+    {
+      "name": "agents_profile_reset",
+      "value": "Reset"
+    },
+    {
+      "name": "chat_attach",
+      "value": "Attach"
+    },
+    {
+      "name": "chat_attach_failed",
+      "value": "Attachment upload failed, please retry"
+    },
+    {
+      "name": "approval_need",
+      "value": "Approval needed"
+    },
+    {
+      "name": "approval_checks",
+      "value": "checks"
+    },
+    {
+      "name": "approval_details",
+      "value": "Details"
+    },
+    {
+      "name": "approval_deny",
+      "value": "Deny"
+    },
+    {
+      "name": "approval_once",
+      "value": "Once"
+    },
+    {
+      "name": "approval_always",
+      "value": "Always allow"
+    },
+    {
+      "name": "approval_failed",
+      "value": "Approval action failed, please retry"
+    },
+    {
+      "name": "chat_process_think",
+      "value": "Thinking"
+    },
+    {
+      "name": "chat_process_tool",
+      "value": "Execution"
+    },
+    {
+      "name": "chats_inbox_title",
+      "value": "Approval Inbox"
+    },
+    {
+      "name": "chats_inbox_pending",
+      "value": "tool actions need approval"
+    },
+    {
+      "name": "chats_inbox_empty",
+      "value": "No pending approvals"
+    },
+    {
+      "name": "chat_menu_pin",
+      "value": "Pin"
+    },
+    {
+      "name": "chat_menu_unpin",
+      "value": "Unpin"
+    },
+    {
+      "name": "chat_menu_archive",
+      "value": "Archive"
+    },
+    {
+      "name": "chat_menu_delete",
+      "value": "Delete"
+    },
+    {
+      "name": "chat_menu_delete_title",
+      "value": "Delete chat?"
+    },
+    {
+      "name": "chat_menu_delete_msg",
+      "value": "This cannot be undone."
+    },
+    {
+      "name": "chat_op_failed",
+      "value": "Chat action failed, please retry"
+    },
+    {
+      "name": "chat_approvals_count",
+      "value": "%d approvals in this chat"
+    },
+    {
+      "name": "chats_tab_active",
+      "value": "Chats"
+    },
+    {
+      "name": "chats_tab_archived",
+      "value": "Archived"
+    },
+    {
+      "name": "chats_archived_empty",
+      "value": "No archived chats"
+    }
+  ]
+}
