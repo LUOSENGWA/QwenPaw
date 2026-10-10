@@ -75,6 +75,10 @@
     {
       "name": "card_glass",
       "value": "#E6FFFDF9"
+    },
+    {
+      "name": "sheet_card_bg",
+      "value": "#DDD8CF"
     }
   ]
 }

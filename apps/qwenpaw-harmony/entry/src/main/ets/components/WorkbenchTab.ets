@@ -1,10 +1,10 @@
 /*
- * 工作台 tab —— 一期 hub（对齐 PR #7378 移动端 workbench 的定位）：
- * 连接状态 + 连接与设置（路由 → SettingsPage）+ 关于 + 审批。
- * 审批：GET /api/console/push-messages 真数据；有待审批且数量变化时发系统通知。
+ * 工作台 tab —— 移植 PR #7378 apps/qwenpaw-mobile/app/(tabs)/workbench.tsx：
+ *   连接状态 + 搜索 + 快捷操作 + 4 分类（点开 → 模块列表）+ 模块 → 通用模块页（/module/{key}）。
+ * 审批：GET /api/console/push-messages 真数据；有待审批且数量变化时发系统通知（一期能力保留）。
  */
 
-import { common } from '@kit.AbilityKit';
+import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { preferences } from '@kit.ArkData';
 import { emitter } from '@kit.BasicServicesKit';
 import { loadConnection, QpConnection } from '../services/ConnectionStore';
@@ -12,7 +12,12 @@ import { hostOf } from '../services/PairingModel';
 import { fetchApprovals, ApprovalInfo } from '../services/ApprovalsService';
 import { AGENT_CHANGE_EVENT } from '../services/AgentsService';
 import { publishNotice, requestNotificationPermission } from '../services/NotifyService';
+import {
+  WorkbenchCategory, WorkbenchModule, WORKBENCH_CATEGORIES, WORKBENCH_MODULES
+} from '../services/WorkbenchModules';
 import { UiTokens } from '../theme/UiTokens';
+import { ThemeManager, ThemeSnapshot } from '../theme/ThemeManager';
+import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
 import { GlassCard } from './GlassCard';
 
 export const CONN_CHANGE_EVENT: string = 'qp_conn_change';
@@ -23,6 +28,23 @@ export struct WorkbenchTab {
   @State connHost: string = '';
   @State connected: boolean = false;
   @State approvals: ApprovalInfo[] = [];
+  @State query: string = '';
+  @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
+  @State isDark: boolean = false;
+
+  private accentColor(): ResourceColor {
+    return this.isDark ? this.theme.accentDark : this.theme.accent;
+  }
+
+  // 快捷操作卡片按压反馈（内容区材质不生效 → 自绘：缩放 + 点光源）
+  @State qaPressed: number = -1;
+  private qaLatch: PressLatch = new PressLatch();
+
+  private onQaTouch(idx: number, e: TouchEvent): void {
+    pressTouch(this.getUIContext(), e, this.qaLatch, (v: boolean): void => {
+      this.qaPressed = v ? idx : -1;
+    });
+  }
 
   private static readonly PREF_NAME: string = 'notify';
   private static readonly KEY_LAST_COUNT: string = 'lastApprovalCount';
@@ -32,6 +54,11 @@ export struct WorkbenchTab {
   aboutToAppear(): void {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     this.loadConn(ctx);
+    this.isDark = ctx.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+    ThemeManager.get().load(ctx).then((): void => {
+      this.theme = ThemeManager.get().snapshot();
+      this.isDark = (ctx.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK);
+    });
     this.connListener = (_data: emitter.EventData): void => {
       this.loadConn(ctx);
     };
@@ -105,15 +132,122 @@ export struct WorkbenchTab {
     }
   }
 
+  private openModule(key: string): void {
+    const param: Record<string, string> = { 'key': key };
+    this.navStack.pushPath({ name: 'module', param: param });
+  }
+
+  private searchResults(): WorkbenchModule[] {
+    const q: string = this.query.trim().toLowerCase();
+    if (q.length === 0) {
+      return [];
+    }
+    return WORKBENCH_MODULES.filter((m: WorkbenchModule): boolean =>
+      `${m.title} ${m.subtitle} ${m.keywords.join(' ')} ${m.scope.join(' ')}`.toLowerCase().includes(q));
+  }
+
   @Builder
-  hubRow(titleRes: Resource, hintRes: ResourceStr | null, arrow: boolean, onTap: () => void) {
-    HubRow({ titleRes: titleRes, hintRes: hintRes, arrow: arrow, onTap: onTap })
+  moduleRow(m: WorkbenchModule) {
+    GlassCard({
+      insetH: 0,
+      onTap: (): void => {
+        this.openModule(m.key);
+      }
+    }) {
+      Row() {
+        SymbolGlyph(m.icon)
+          .fontSize(22)
+          .fontColor([this.accentColor()])
+          .width(40)
+          .margin({ right: 8 })
+        Column() {
+          Text(m.title)
+            .fontSize(UiTokens.fsBody)
+            .fontWeight(FontWeight.Medium)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(m.subtitle)
+            .fontSize(UiTokens.fsSecondary)
+            .fontColor($r('app.color.text_tertiary'))
+            .margin({ top: 2 })
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+        Text('›')
+          .fontSize(20)
+          .fontColor($r('app.color.text_tertiary'))
+          .margin({ left: 8 })
+      }
+      .width('100%')
+    }
+  }
+
+  @Builder
+  quickAction(icon: Resource, label: string, key: string, idx: number) {
+    Column() {
+      SymbolGlyph(icon)
+        .fontSize(22)
+        .fontColor([this.accentColor()])
+      Text(label)
+        .fontSize(UiTokens.fsCaption)
+        .fontWeight(FontWeight.Medium)
+        .margin({ top: 6 })
+        .maxLines(1)
+    }
+    .layoutWeight(1)
+    .padding({ top: 12, bottom: 12 })
+    .borderRadius(UiTokens.cardRadius)
+    .backgroundColor($r('app.color.card_glass'))
+    .scale({ x: this.qaPressed === idx ? PRESS_SCALE : 1, y: this.qaPressed === idx ? PRESS_SCALE : 1 })
+    .visualEffect(pressEffect(this.qaPressed === idx))
+    .onTouch((e: TouchEvent): void => {
+      this.onQaTouch(idx, e);
+    })
+    .onClick((): void => {
+      this.openModule(key);
+    })
+  }
+
+  @Builder
+  categoryRow(cat: WorkbenchCategory) {
+    GlassCard({
+      insetH: 0,
+      onTap: (): void => {
+        const param: Record<string, Object> = { 'title': cat.title, 'stack': this.navStack };
+        this.navStack.pushPath({ name: 'workbench-category', param: param });
+      }
+    }) {
+      Row() {
+        Column() {
+          Text(cat.title)
+            .fontSize(UiTokens.fsBody)
+            .fontWeight(FontWeight.Medium)
+          Text(cat.subtitle)
+            .fontSize(UiTokens.fsSecondary)
+            .fontColor($r('app.color.text_tertiary'))
+            .margin({ top: 2 })
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+        Text(`${cat.modules.length} ${this.t($r('app.string.workbench_items_unit'))}`)
+          .fontSize(UiTokens.fsCaption)
+          .fontColor($r('app.color.text_tertiary'))
+          .margin({ right: 6 })
+        Text('›')
+          .fontSize(20)
+          .fontColor($r('app.color.text_tertiary'))
+      }
+      .width('100%')
+    }
   }
 
   build() {
     Column() {
-      // 大标题（FREE 标题栏）已显示 tab 名，页内不再重复
-      // 连接状态卡（只读信息块：与「会话」页状态卡同款玻璃块，不加按压反馈）
+      // 连接状态卡（只读信息块：与「会话」页状态卡同款玻璃块）
       Row() {
         Circle()
           .width(10)
@@ -131,28 +265,87 @@ export struct WorkbenchTab {
       .backgroundColor($r('app.color.card_glass'))
       .margin({ top: UiTokens.cardVGap, bottom: UiTokens.cardVGap })
 
-      this.hubRow($r('app.string.workbench_conn'), $r('app.string.workbench_conn_hint'), true, () => {
-        this.navStack.pushPath({ name: 'settings' });
-      })
+      // 搜索条（对齐 7378 workbench 搜索；放大镜用系统符号，不用 emoji）
+        Row() {
+          SymbolGlyph($r('sys.symbol.magnifyingglass'))
+            .fontSize(17)
+            .fontColor([$r('app.color.text_secondary')])
+            .margin({ right: 8 })
+          TextInput({ text: $$this.query, placeholder: $r('app.string.workbench_search') })
+            .layoutWeight(1)
+            .height(38)
+            .fontSize(UiTokens.fsSecondary)
+            .backgroundColor(Color.Transparent)
+            .fontColor($r('app.color.input_text'))
+            .placeholderColor($r('app.color.placeholder'))
+        }
+        .width('100%')
+        .padding({ left: 12, right: 12 })
+        .borderRadius(UiTokens.cardRadius)
+        .backgroundColor($r('app.color.card_bg'))
+        .margin({ bottom: UiTokens.cardVGap })
 
-      this.hubRow($r('app.string.workbench_about'), null, false, () => {
-        this.getUIContext().showAlertDialog({
-          title: $r('app.string.about_title'),
-          message: $r('app.string.about_message'),
-          confirm: { value: 'OK', action: () => {} }
-        });
-      })
+        if (this.query.trim().length > 0) {
+          // 搜索结果
+          ForEach(this.searchResults(), (m: WorkbenchModule) => {
+            this.moduleRow(m)
+          }, (m: WorkbenchModule) => m.key)
+        } else {
+          Text($r('app.string.workbench_quick'))
+            .fontSize(UiTokens.fsCaption)
+            .fontColor($r('app.color.text_tertiary'))
+            .width('100%')
+            .margin({ bottom: 4 })
+          Row({ space: 10 }) {
+            this.quickAction($r('sys.symbol.list_bullet'), this.t($r('app.string.workbench_qa_sessions')), 'sessions', 0)
+            this.quickAction($r('sys.symbol.clock_arrow_2_circlepath'), this.t($r('app.string.workbench_qa_automation')), 'automation', 1)
+            this.quickAction($r('sys.symbol.folder'), this.t($r('app.string.workbench_qa_files')), 'files', 2)
+            this.quickAction($r('sys.symbol.wrench_and_screwdriver'), this.t($r('app.string.workbench_qa_tools')), 'tools', 3)
+          }
+          .width('100%')
+          .margin({ bottom: UiTokens.cardVGap })
 
+          Text($r('app.string.workbench_all'))
+            .fontSize(UiTokens.fsCaption)
+            .fontColor($r('app.color.text_tertiary'))
+            .width('100%')
+            .margin({ bottom: 4 })
+          ForEach(WORKBENCH_CATEGORIES, (cat: WorkbenchCategory) => {
+            this.categoryRow(cat)
+          }, (cat: WorkbenchCategory) => cat.title)
+
+          // 连接与设置 / 关于（一期入口保留）
+          HubRow({
+            titleRes: $r('app.string.workbench_conn'),
+            hintRes: $r('app.string.workbench_conn_hint'),
+            arrow: true,
+            onTap: (): void => {
+              const param: Record<string, Object> = { 'stack': this.navStack };
+              this.navStack.pushPath({ name: 'settings', param: param });
+            }
+          })
+          HubRow({
+            titleRes: $r('app.string.workbench_about'),
+            hintRes: null,
+            arrow: false,
+            onTap: (): void => {
+              this.getUIContext().showAlertDialog({
+                title: $r('app.string.about_title'),
+                message: $r('app.string.about_message'),
+                confirm: { value: 'OK', action: () => {} }
+              });
+            }
+          })
+        }
     }
     .width('100%')
     .constraintSize({ minHeight: '100%' })
     .padding({ top: UiTokens.topInset, bottom: UiTokens.bottomInset, left: UiTokens.pageHMargin, right: UiTokens.pageHMargin })
     .backgroundColor($r('app.color.page_bg'))
   }
-
 }
 
-// 工作台 hub 行卡（卡片壳统一走 GlassCard：与「会话」「智能体」两页同一套玻璃卡与按压反馈）
+// 工作台 hub 行卡（卡片壳统一走 GlassCard）
 @Component
 export struct HubRow {
   titleRes: Resource = $r('app.string.tab_workbench');
@@ -162,7 +355,6 @@ export struct HubRow {
 
   build() {
     GlassCard({
-      // 本页容器已给 16vp 水平留白 → 卡片不再叠加，保证三页卡片边界一致（x=56..1260）
       insetH: 0,
       onTap: (): void => {
         this.onTap();

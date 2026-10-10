@@ -9,6 +9,7 @@
 
 import { encodeRelayFrame, decodeRelayFrame } from './RelayCodec';
 import { RelayFrame, RelayFrameHeader } from './RelayCodec';
+import { normalizeBaseUrl, hostOf } from './PairingModel';
 
 export interface SelfTestResult {
   name: string;
@@ -118,6 +119,28 @@ export function runCodecSelfTest(): SelfTestResult[] {
   results.push(check('7. canonical data 逐字节', () => {
     const payload: Uint8Array = new Uint8Array([0, 1, 112, 110, 103]);
     return toHex(encodeRelayFrame({ header: dataHeader(), payload: payload })) === DATA_HEX;
+  }));
+
+  // 地址解析（对齐 7378 api/pairing.ts 的标准 URL 解析：IPv4 / IPv6 / 域名 / 端口）
+  results.push(check('8. 地址：裸 host:port 补 http', () => {
+    return normalizeBaseUrl('192.168.1.10:8088') === 'http://192.168.1.10:8088';
+  }));
+  results.push(check('9. 地址：域名 + https + 端口', () => {
+    return normalizeBaseUrl('https://paw.example.com:8443') === 'https://paw.example.com:8443';
+  }));
+  results.push(check('10. 地址：IPv6 保留方括号', () => {
+    return normalizeBaseUrl('http://[fe80::1]:8088') === 'http://[fe80::1]:8088';
+  }));
+  results.push(check('11. 地址：hostOf 提取主机（IPv6 含端口）', () => {
+    return hostOf('http://[fe80::1]:8088') === '[fe80::1]:8088';
+  }));
+  results.push(check('12. 地址：带凭据被拒', () => {
+    try {
+      normalizeBaseUrl('http://u:p@nas.local:8088');
+      return false;
+    } catch (e) {
+      return true;
+    }
   }));
 
   return results;

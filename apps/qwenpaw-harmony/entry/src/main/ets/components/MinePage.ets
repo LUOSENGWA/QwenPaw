@@ -34,7 +34,7 @@ export struct MinePage {
 
       Button($r('app.string.mine_run'))
         .margin({ top: 20, left: 16, right: 16 })
-        // 半透明玻璃底（内容区材质不生效，故显式给底色）+ 按压弹性/点光源
+        // 玻璃底（内容区材质不生效，官方 FAQ 范围规则）+ 自绘按压弹性/点光源
         .backgroundColor($r('app.color.card_glass'))
         .scale({ x: this.pressed ? PRESS_SCALE : 1, y: this.pressed ? PRESS_SCALE : 1 })
         .stateEffect(false)

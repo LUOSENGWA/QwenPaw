@@ -36,6 +36,7 @@ import { uiMaterial, display, LengthMetrics } from '@kit.ArkUI';
 import { emitter } from '@kit.BasicServicesKit';
 import { common, Configuration, ConfigurationConstant } from '@kit.AbilityKit';
 import { ThemeManager, ThemeSnapshot, ThemeListener } from '../theme/ThemeManager';
+import { syncConsoleThemeToManager } from '../services/ConsoleTheme';
 import { UiTokens } from '../theme/UiTokens';
 import { AGENT_CREATE_EVENT } from '../services/AgentsService';
 import { ConnectPanel } from '../components/ConnectPanel';
@@ -119,7 +120,8 @@ struct Index {
         label: $r('app.string.menu_settings'),
         icon: $r('sys.symbol.gearshape'),
         action: () => {
-          this.stack.pushPath({ name: 'settings' });
+          const param: Record<string, Object> = { 'stack': this.stack };
+          this.stack.pushPath({ name: 'settings', param: param });
         }
       }
     });
@@ -143,6 +145,12 @@ struct Index {
     ThemeManager.get().subscribe(this.themeListener);
     ThemeManager.get().load(ctx).then((): void => {
       this.applyTheme(ThemeManager.get().snapshot());
+      // 启动时若开启「与控制台同步」，取一次控制台主题色并应用
+      if (ThemeManager.get().isSyncEnabled()) {
+        syncConsoleThemeToManager(ctx).then((): void => {
+          this.applyTheme(ThemeManager.get().snapshot());
+        });
+      }
     });
     this.rebuildTitleBarOpts();
   }

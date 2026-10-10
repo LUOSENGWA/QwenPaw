@@ -71,6 +71,20 @@ export function jsonOf(response: http.HttpResponse): Record<string, Object> {
   }
 }
 
+// 顶层返回数组的端点（/tools、/skills、/workspace/git/log 等）：jsonOf 是对象口径，数组需单独解析
+export function jsonArrayOf(response: http.HttpResponse): Object[] {
+  const result: Object = response.result;
+  if (typeof result !== 'string') {
+    return [];
+  }
+  try {
+    const parsed: Object = JSON.parse(result as string);
+    return Array.isArray(parsed) ? parsed as Object[] : [];
+  } catch (e) {
+    return [];
+  }
+}
+
 export function timeoutHint(baseUrl: string): string {
   const host: string = hostOf(baseUrl);
   if (host === '127.0.0.1' || host === 'localhost' || host === '[::1]' || host === '::1') {

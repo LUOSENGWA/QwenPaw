@@ -4,36 +4,53 @@
  * 远程中转配对（v2 JSON）一期不支持。
  */
 
+import { url } from '@kit.ArkTS';
+
 export interface DirectPairing {
   baseUrl: string;
   ticket: string;
 }
 
+// 地址规范化（对齐 PR #7378 api/pairing.ts normalizeBaseUrl 的标准 URL 解析，
+// 并按业界 / NAS（飞牛等）惯例放宽输入）：
+//   支持 IPv4 / IPv6（[::1]）/ 域名 / 显式或省略端口；未写协议时按 http:// 补全。
 export function normalizeBaseUrl(value: string): string {
-  const trimmed: string = value.trim();
-  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+  let trimmed: string = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error('请输入 QwenPaw 地址。');
+  }
+  // 业界惯例：裸 host[:port] 或 [IPv6][:port] 自动补 http://
+  if (trimmed.indexOf('://') < 0) {
+    trimmed = `http://${trimmed}`;
+  }
+  let parsed: url.URL;
+  try {
+    parsed = url.URL.parseURL(trimmed);
+  } catch (e) {
+    throw new Error('QwenPaw 地址格式无效。');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error('QwenPaw 地址必须使用 HTTP 或 HTTPS。');
   }
-  const noFrag: string = trimmed.split('#')[0];
-  if (noFrag.indexOf('?') >= 0) {
-    throw new Error('QwenPaw 地址不能带查询参数。');
-  }
-  const authority: string = noFrag.slice(noFrag.indexOf('://') + 3);
-  if (authority.indexOf('@') >= 0) {
+  if (parsed.username.length > 0 || parsed.password.length > 0) {
     throw new Error('QwenPaw 地址不能带账号凭据。');
   }
-  return noFrag.replace(/\/+$/, '');
+  if (parsed.search.length > 0 || parsed.hash.length > 0) {
+    throw new Error('QwenPaw 地址不能带查询参数。');
+  }
+  if (parsed.host.length === 0) {
+    throw new Error('QwenPaw 地址缺少主机名。');
+  }
+  return parsed.toString().replace(/\/+$/, '');
 }
 
+// 展示用主机名（含端口；IPv6 保留方括号，如 [fe80::1]:8088）
 export function hostOf(baseUrl: string): string {
-  const schemeIdx: number = baseUrl.indexOf('://');
-  if (schemeIdx < 0) {
+  try {
+    return url.URL.parseURL(baseUrl).host.toLowerCase();
+  } catch (e) {
     return '';
   }
-  const rest: string = baseUrl.slice(schemeIdx + 3);
-  const end: number = rest.search(/[\/:?#]/);
-  const host: string = end < 0 ? rest : rest.slice(0, end);
-  return host.toLowerCase();
 }
 
 export function parsePairingUri(value: string): DirectPairing {

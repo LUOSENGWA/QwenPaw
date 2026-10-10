@@ -84,28 +84,52 @@ function nameOfUri(uri: string): string {
   return raw.length > 0 ? raw : `file_${Date.now()}`;
 }
 
+// 选中并拷入 cacheDir 的公共实现：uri → 沙箱文件（stampNames = 是否加时间戳前缀）
+function copyPicked(ctx: common.Context, uri: string, stampNames: boolean): PickedFile {
+  const rawName: string = nameOfUri(decodeURIComponent(uri));
+  const name: string = stampNames ? `${Date.now()}_${rawName}` : rawName;
+  const dest: string = `${ctx.cacheDir}/${name}`;
+  const src: fs.File = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+  try {
+    fs.copyFileSync(src.fd, dest);
+  } finally {
+    fs.closeSync(src);
+  }
+  const mime: string = mimeOf(rawName);
+  const item: PickedFile = { path: dest, name: name, mime: mime, kind: kindOf(mime) };
+  return item;
+}
+
 // 打开系统文件选择器（多选），并把选中文件逐个拷入 cacheDir
-export async function pickFiles(ctx: common.Context): Promise<PickedFile[]> {
+// stampNames = true：给文件名加时间戳前缀（聊天附件场景，避免同名互相覆盖）；
+// stampNames = false：保留原文件名（工作区文件上传场景，落盘名要与所选文件一致）。
+export async function pickFiles(ctx: common.Context,
+  stampNames: boolean = true): Promise<PickedFile[]> {
   const options: picker.DocumentSelectOptions = new picker.DocumentSelectOptions();
   options.maxSelectNumber = 5;
   const view: picker.DocumentViewPicker = new picker.DocumentViewPicker(ctx);
   const uris: string[] = await view.select(options);
   const out: PickedFile[] = [];
   for (const uri of uris) {
-    const rawName: string = nameOfUri(decodeURIComponent(uri));
-    const name: string = `${Date.now()}_${rawName}`;
-    const dest: string = `${ctx.cacheDir}/${name}`;
-    const src: fs.File = fs.openSync(uri, fs.OpenMode.READ_ONLY);
-    try {
-      fs.copyFileSync(src.fd, dest);
-    } finally {
-      fs.closeSync(src);
-    }
-    const mime: string = mimeOf(rawName);
-    const item: PickedFile = { path: dest, name: name, mime: mime, kind: kindOf(mime) };
-    out.push(item);
+    out.push(copyPicked(ctx, uri, stampNames));
   }
   return out;
+}
+
+// 单选 + 后缀过滤（导入项目 ZIP 等场景）；用户取消返回 null
+export async function pickSingleFile(ctx: common.Context,
+  suffixes: string[]): Promise<PickedFile | null> {
+  const options: picker.DocumentSelectOptions = new picker.DocumentSelectOptions();
+  options.maxSelectNumber = 1;
+  if (suffixes.length > 0) {
+    options.fileSuffixFilters = suffixes;
+  }
+  const view: picker.DocumentViewPicker = new picker.DocumentViewPicker(ctx);
+  const uris: string[] = await view.select(options);
+  if (uris.length === 0) {
+    return null;
+  }
+  return copyPicked(ctx, uris[0], false);
 }
 
 // 上传完成后清理沙箱临时文件（失败忽略：文件可能已被系统回收）

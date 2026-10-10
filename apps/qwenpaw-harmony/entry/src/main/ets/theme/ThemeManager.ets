@@ -77,6 +77,10 @@ export function withAlpha(hex: string, alpha: number): string {
 const PREF_NAME: string = 'theme';
 const KEY_PRESET_ID: string = 'presetId';
 const KEY_CUSTOM_ACCENT: string = 'customAccent';
+// 与控制台同步（GET /api/config/theme）：开关 + 同步下来的浅/深主色
+const KEY_SYNC_ENABLED: string = 'syncEnabled';
+const KEY_SYNCED_ACCENT: string = 'syncedAccent';
+const KEY_SYNCED_ACCENT_DARK: string = 'syncedAccentDark';
 
 // 主题变更监听：UI 层（Index 等）订阅后即时刷新 @State 快照
 export type ThemeListener = (snap: ThemeSnapshot) => void;
@@ -85,6 +89,9 @@ export class ThemeManager {
   private static inst: ThemeManager | null = null;
   private presetId: string = DEFAULT_THEME_PRESET.id;
   private customAccent: string = '';
+  private syncEnabled: boolean = false;
+  private syncedAccent: string = '';
+  private syncedAccentDark: string = '';
   private listeners: ThemeListener[] = [];
 
   subscribe(fn: ThemeListener): void {
@@ -118,6 +125,9 @@ export class ThemeManager {
       const pref: preferences.Preferences = await preferences.getPreferences(ctx, PREF_NAME);
       this.presetId = (await pref.get(KEY_PRESET_ID, DEFAULT_THEME_PRESET.id)) as string;
       this.customAccent = (await pref.get(KEY_CUSTOM_ACCENT, '')) as string;
+      this.syncEnabled = (await pref.get(KEY_SYNC_ENABLED, false)) as boolean;
+      this.syncedAccent = (await pref.get(KEY_SYNCED_ACCENT, '')) as string;
+      this.syncedAccentDark = (await pref.get(KEY_SYNCED_ACCENT_DARK, '')) as string;
       if (this.findPreset(this.presetId) === null) {
         this.presetId = DEFAULT_THEME_PRESET.id;
       }
@@ -140,6 +150,9 @@ export class ThemeManager {
       const pref: preferences.Preferences = await preferences.getPreferences(ctx, PREF_NAME);
       await pref.put(KEY_PRESET_ID, this.presetId);
       await pref.put(KEY_CUSTOM_ACCENT, this.customAccent);
+      await pref.put(KEY_SYNC_ENABLED, this.syncEnabled);
+      await pref.put(KEY_SYNCED_ACCENT, this.syncedAccent);
+      await pref.put(KEY_SYNCED_ACCENT_DARK, this.syncedAccentDark);
       await pref.flush();
     } catch (e) {
       // 持久化失败不影响本次会话
@@ -151,6 +164,11 @@ export class ThemeManager {
       return false;
     }
     this.presetId = id;
+    // 手动选预设 = 显式覆盖「与控制台同步」：同步开着时若不关闭，snapshot 仍取同步色，
+    // 菜单点了没反应（死 UI）
+    this.syncEnabled = false;
+    this.syncedAccent = '';
+    this.syncedAccentDark = '';
     this.notify();
     await this.persist(ctx);
     return true;
@@ -162,12 +180,40 @@ export class ThemeManager {
     await this.persist(ctx);
   }
 
+  // 同步开关（开/关）；开启并不立即取色（取色由调用方 fetch 后 applySynced）
+  async setSyncEnabled(enabled: boolean, ctx: common.UIAbilityContext): Promise<void> {
+    this.syncEnabled = enabled;
+    if (!enabled) {
+      this.syncedAccent = '';
+      this.syncedAccentDark = '';
+    }
+    this.notify();
+    await this.persist(ctx);
+  }
+
+  // 应用从控制台同步来的主色（浅色 accent / 深色 accentDark）
+  async applySyncedTheme(accent: string, accentDark: string, ctx: common.UIAbilityContext): Promise<void> {
+    this.syncedAccent = accent;
+    this.syncedAccentDark = accentDark.length > 0 ? accentDark : accent;
+    this.syncEnabled = true;
+    this.notify();
+    await this.persist(ctx);
+  }
+
+  isSyncEnabled(): boolean {
+    return this.syncEnabled;
+  }
+
   snapshot(): ThemeSnapshot {
     const preset: ThemePreset = this.findPreset(this.presetId) ?? DEFAULT_THEME_PRESET;
+    // 与控制台同步优先：同步到主色时直接用控制台浅/深色
+    const useSync: boolean = this.syncEnabled && this.syncedAccent.length > 0;
     const hasCustom: boolean = this.customAccent.length > 0;
-    const accent: string = hasCustom ? this.customAccent : preset.accent;
-    // 自定义主色时，深色主色 = 主色向白提亮 30%（近似 console dark.accent 关系）
-    const accentDark: string = hasCustom ? mixHex(this.customAccent, '#ffffff', 0.3) : preset.accentDark;
+    const accent: string = useSync ? this.syncedAccent
+      : (hasCustom ? this.customAccent : preset.accent);
+    const accentDark: string = useSync
+      ? (this.syncedAccentDark.length > 0 ? this.syncedAccentDark : this.syncedAccent)
+      : (hasCustom ? mixHex(this.customAccent, '#ffffff', 0.3) : preset.accentDark);
     // accentBg 对齐 console：浅色 rgba(…,0.1)≈#1A，深色 rgba(…,0.16)≈#29
     const accentBg: string = withAlpha(accent, 0x1A);
     const accentBgDark: string = withAlpha(accentDark, 0x29);

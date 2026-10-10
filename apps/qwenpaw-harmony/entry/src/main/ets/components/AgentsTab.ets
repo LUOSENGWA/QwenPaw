@@ -28,6 +28,7 @@ import { hostOf } from '../services/PairingModel';
 import { ThemeManager, ThemeSnapshot, ThemeListener } from '../theme/ThemeManager';
 import { UiTokens } from '../theme/UiTokens';
 import { GlassCard } from './GlassCard';
+import { SheetGate, moduleSheetOptions } from './SheetGate';
 import { CONN_CHANGE_EVENT } from './WorkbenchTab';
 
 @Component
@@ -54,6 +55,21 @@ export struct AgentsTab {
   // —— 智能体管理（行内 ⋯ 菜单 / 创建 / 复制 / 头像昵称）——
   @State profiles: Map<string, AgentProfile> = new Map<string, AgentProfile>();
   @State sheetShown: boolean = false;
+  // 半模态开关统一走闸门（单向绑定 + 回退动画期间排队；材质由 moduleSheetOptions 统一给）
+  private gate: SheetGate = new SheetGate();
+
+  private openSheet(): void {
+    if (!this.gate.request()) {
+      return;
+    }
+    this.sheetShown = true;
+  }
+
+  private closeSheet(): void {
+    this.gate.beginClose();
+    this.sheetShown = false;
+  }
+
   @State sheetMode: string = '';                 // create / copy / profile
   @State formName: string = '';
   @State formId: string = '';
@@ -305,7 +321,7 @@ export struct AgentsTab {
     this.profileAgentId = a.id;
     this.profileNick = this.agentNameOf(a) === a.name ? '' : this.agentNameOf(a);
     this.profileColorPick = this.agentColorOf(a);
-    this.sheetShown = true;
+    this.openSheet();
   }
 
   private openCopy(a: AgentInfo): void {
@@ -315,7 +331,7 @@ export struct AgentsTab {
     this.formCopyMd = true;
     this.formCopySkills = false;
     this.formCopyJobs = false;
-    this.sheetShown = true;
+    this.openSheet();
   }
 
   private openCreate(): void {
@@ -324,7 +340,7 @@ export struct AgentsTab {
     this.formId = '';
     this.formDesc = '';
     this.formWorkspace = '';
-    this.sheetShown = true;
+    this.openSheet();
   }
 
   private async submitSheet(): Promise<void> {
@@ -362,7 +378,7 @@ export struct AgentsTab {
           this.formCopyMd, this.formCopySkills, this.formCopyJobs);
         await this.refresh(false);
       }
-      this.sheetShown = false;
+      this.closeSheet();
     } catch (e) {
       this.toast((e as Error).message);
     } finally {
@@ -571,12 +587,15 @@ export struct AgentsTab {
           .fontColor($r('app.color.btn_gray_text'))
           .stateEffect(true)
           .onClick((): void => {
-            this.sheetShown = false;
+            this.closeSheet();
           })
         Button($r('app.string.common_save'))
           .layoutWeight(1)
           .height(42)
           .margin({ left: 10 })
+          // 主操作与其余半模态一致走主题色实底（此前未给底色 → 回落系统蓝）
+          .backgroundColor(this.isDark ? this.theme.accentDark : this.theme.accent)
+          .fontColor(Color.White)
           .enabled(!this.busy)
           .stateEffect(true)
           .onClick((): void => {
@@ -587,7 +606,8 @@ export struct AgentsTab {
       .margin({ top: 20 })
     }
     .width('100%')
-    .padding({ left: 18, right: 18, bottom: 20 })
+    // 顶部留出系统关闭叉（✕）与拖拽条的高度
+    .padding({ left: 18, right: 18, top: 64, bottom: 20 })
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -734,12 +754,11 @@ export struct AgentsTab {
     // 列表从屏幕顶（y=0）起、左右不留白（滚动条贴屏右缘），水平留白改由条目各自承担
     .backgroundColor($r('app.color.page_bg'))
     // 管理与档案表单：创建 / 复制 / 头像昵称（同一 Sheet，三态由 sheetMode 决定）
-    .bindSheet($$this.sheetShown, this.manageSheet(), {
-      height: 540,
-      dragBar: true,
-      showClose: true,
-      backgroundColor: $r('app.color.page_bg')
-    })
+    .bindSheet(this.sheetShown, this.manageSheet(),
+      moduleSheetOptions(540, this.gate,
+        (v: boolean): void => {
+          this.sheetShown = v;
+        }))
   }
 
   // 当前智能体卡内容（卡片壳 = GlassCard：内容区统一玻璃卡 + 按压弹性/点光源）

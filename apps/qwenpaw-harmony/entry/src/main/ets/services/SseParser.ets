@@ -160,17 +160,35 @@ function jsonPayload(value: string): Record<string, Object> | null {
   }
 }
 
-function messageKind(value: Object): string {
-  if (value === 'reasoning') {
+// 工具调用类型精确集合 —— 逐条对齐 PR #7378 apps/qwenpaw-mobile/src/api/messages.ts TOOL_TYPES。
+// 真实后端 wire 用 type=plugin_call / plugin_call_output（不含子串 "tool"），
+// 且 role 恒为 assistant/user（无 tool role）——判定须按 type 精确集合，而非子串。
+const TOOL_TYPES: string[] = [
+  'plugin_call', 'plugin_call_output', 'plugin_result',
+  'function_call', 'function_call_output', 'mcp_tool_call', 'mcp_tool_call_output',
+];
+
+export function isToolType(type: string): boolean {
+  return TOOL_TYPES.indexOf(type) >= 0;
+}
+
+// 消息级 kind 判定（对齐 PR #7378 toDisplayMessage）：
+//   type === 'reasoning'                     → 'reasoning'
+//   TOOL_TYPES.has(type) || role === 'tool'  → 'tool'
+//   其余                                      → 'message'
+export function messageKindOf(type: string, role: string): string {
+  if (type === 'reasoning') {
     return 'reasoning';
   }
-  if (typeof value === 'string') {
-    const s: string = value as string;
-    if (s.includes('call') || s.includes('tool') || s.includes('plugin')) {
-      return 'tool';
-    }
+  if (isToolType(type) || role === 'tool') {
+    return 'tool';
   }
   return 'message';
+}
+
+function messageKind(value: Object): string {
+  const t: string = typeof value === 'string' ? value as string : '';
+  return messageKindOf(t, '');
 }
 
 function messageDeltaText(content: Object): string {

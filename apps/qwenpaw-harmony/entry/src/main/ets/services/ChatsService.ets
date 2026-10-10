@@ -12,6 +12,15 @@ export interface ChatInfo {
   name: string;
   updatedAtMs: number;   // 0 = 未知
   pinned: boolean;
+  groupId: string;       // 所属分组（空 = 未分组；对齐 RN ChatSpec.group_id）
+}
+
+// 会话分组（对齐 PR #7378 client.ts ChatGroup：GET/POST/PUT/DELETE /chats/groups）
+export interface ChatGroup {
+  id: string;
+  name: string;
+  kind: string;          // default / cron / subagents / 自定义
+  order: number;
 }
 
 function strOf(rec: Record<string, Object>, key: string): string {
@@ -49,7 +58,7 @@ export function relativeTime(ms: number): string {
 export async function fetchChats(baseUrl: string, token: string, agentId: string,
   archived: boolean = false): Promise<ChatInfo[]> {
   const resp: http.HttpResponse = await doRequest(
-    `${baseUrl}/api/chats?archived=false`, http.RequestMethod.GET, null,
+    `${baseUrl}/api/chats?archived=${archived}`, http.RequestMethod.GET, null,
     token.length > 0 ? token : null, agentId);
   if (resp.responseCode === 401 || resp.responseCode === 403) {
     throw new ConnectError(`票据已失效（HTTP ${resp.responseCode}），请重新连接。`);
@@ -74,7 +83,8 @@ export async function fetchChats(baseUrl: string, token: string, agentId: string
       name: name,
       sessionId: strOf(c, 'session_id').length > 0 ? strOf(c, 'session_id') : strOf(c, 'id'),
       updatedAtMs: isoToMs(strOf(c, 'updated_at')),
-      pinned: typeof pinned === 'boolean' ? pinned as boolean : false
+      pinned: typeof pinned === 'boolean' ? pinned as boolean : false,
+      groupId: strOf(c, 'group_id')
     };
     out.push(info);
   }
@@ -88,4 +98,86 @@ export async function fetchChats(baseUrl: string, token: string, agentId: string
     return b.updatedAtMs - a.updatedAtMs;
   });
   return out;
+}
+
+// ============ 会话分组与操作（对齐 PR #7378 client.ts）============
+function authOf(token: string): string | null {
+  return token.length > 0 ? token : null;
+}
+
+function assertOk(resp: http.HttpResponse, what: string): void {
+  if (resp.responseCode === 401 || resp.responseCode === 403) {
+    throw new ConnectError(`票据已失效（HTTP ${resp.responseCode}），请重新连接。`);
+  }
+  if (resp.responseCode < 200 || resp.responseCode >= 300) {
+    throw new ConnectError(`${what}失败（HTTP ${resp.responseCode}）。`);
+  }
+}
+
+function groupFrom(rec: Record<string, Object>): ChatGroup {
+  const ord: Object = rec['order'];
+  return {
+    id: strOf(rec, 'id'),
+    name: strOf(rec, 'name'),
+    kind: strOf(rec, 'kind').length > 0 ? strOf(rec, 'kind') : 'default',
+    order: typeof ord === 'number' ? ord as number : 0
+  };
+}
+
+// 分组列表：GET /chats/groups（返回数组）
+export async function fetchChatGroups(baseUrl: string, token: string, agentId: string): Promise<ChatGroup[]> {
+  const resp: http.HttpResponse = await doRequest(`${baseUrl}/api/chats/groups`,
+    http.RequestMethod.GET, null, authOf(token), agentId);
+  if (resp.responseCode !== 200) {
+    return [];
+  }
+  const data: Object = jsonOf(resp);
+  if (!Array.isArray(data)) {
+    return [];
+  }
+  const out: ChatGroup[] = [];
+  for (const item of data as Object[]) {
+    out.push(groupFrom(item as Record<string, Object>));
+  }
+  out.sort((a: ChatGroup, b: ChatGroup): number => a.order - b.order);
+  return out;
+}
+
+// 新建分组：POST /chats/groups {name}
+export async function createChatGroup(baseUrl: string, token: string, agentId: string,
+  name: string): Promise<void> {
+  const body: Record<string, string> = { 'name': name };
+  assertOk(await doRequest(`${baseUrl}/api/chats/groups`, http.RequestMethod.POST,
+    JSON.stringify(body), authOf(token), agentId), '新建分组');
+}
+
+// 重命名分组：PUT /chats/groups/{id} {name}
+export async function renameChatGroup(baseUrl: string, token: string, agentId: string,
+  groupId: string, name: string): Promise<void> {
+  const body: Record<string, string> = { 'name': name };
+  assertOk(await doRequest(`${baseUrl}/api/chats/groups/${encodeURIComponent(groupId)}`,
+    http.RequestMethod.PUT, JSON.stringify(body), authOf(token), agentId), '重命名分组');
+}
+
+// 删除分组：DELETE /chats/groups/{id}
+export async function deleteChatGroup(baseUrl: string, token: string, agentId: string,
+  groupId: string): Promise<void> {
+  assertOk(await doRequest(`${baseUrl}/api/chats/groups/${encodeURIComponent(groupId)}`,
+    http.RequestMethod.DELETE, null, authOf(token), agentId), '删除分组');
+}
+
+// 重命名会话：PUT /chats/{id} {name}
+export async function renameChat(baseUrl: string, token: string, agentId: string,
+  chatId: string, name: string): Promise<void> {
+  const body: Record<string, string> = { 'name': name };
+  assertOk(await doRequest(`${baseUrl}/api/chats/${encodeURIComponent(chatId)}`,
+    http.RequestMethod.PUT, JSON.stringify(body), authOf(token), agentId), '重命名会话');
+}
+
+// 移动会话到分组：PUT /chats/{id} {group_id}（空 = 移出分组 → null）
+export async function moveChatToGroup(baseUrl: string, token: string, agentId: string,
+  chatId: string, groupId: string): Promise<void> {
+  const payload: Record<string, string | null> = { 'group_id': groupId.length > 0 ? groupId : null };
+  assertOk(await doRequest(`${baseUrl}/api/chats/${encodeURIComponent(chatId)}`,
+    http.RequestMethod.PUT, JSON.stringify(payload), authOf(token), agentId), '移动会话');
 }

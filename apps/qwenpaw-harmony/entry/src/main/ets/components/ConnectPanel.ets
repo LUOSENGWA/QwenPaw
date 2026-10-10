@@ -7,13 +7,17 @@
 import { common, Configuration, ConfigurationConstant, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
 
 import { GlassCard } from './GlassCard';
+import { SheetGate, moduleSheetOptions } from './SheetGate';
 import { http } from '@kit.NetworkKit';
 import { emitter } from '@kit.BasicServicesKit';
 import { scanBarcode, scanCore } from '@kit.ScanKit';
 import { QpConnection, loadConnection, saveConnection, clearConnection } from '../services/ConnectionStore';
 import { connectToQwenPaw, describeConnectError, doRequest } from '../services/ConnectionService';
 import { parsePairingUri, parseManualInput, hostOf } from '../services/PairingModel';
-import { fetchChats, ChatInfo, relativeTime } from '../services/ChatsService';
+import {
+  fetchChats, ChatInfo, relativeTime, renameChat, ChatGroup, fetchChatGroups,
+  createChatGroup, renameChatGroup, deleteChatGroup, moveChatToGroup
+} from '../services/ChatsService';
 import { ChatRouteParam, CHAT_CLOSED_EVENT } from '../services/ChatDetailService';
 import { AGENT_CHANGE_EVENT } from '../services/AgentsService';
 import { CONN_CHANGE_EVENT } from './WorkbenchTab';
@@ -44,6 +48,43 @@ export struct ConnectPanel {
   @State agentNames: string[] = [];
   @State chats: ChatInfo[] = [];
   @State showArchived: boolean = false;
+  // 会话分组（对齐 RN features/chats/grouping.ts + chats.tsx）
+  @State groups: ChatGroup[] = [];
+  // 统一半模态（重命名会话 / 新建·重命名分组 / 移动到分组）：
+  // 单 bindSheet + 模式切换，避免「同一组件挂多个 bindSheet 只最后一个生效」
+  @State modalShown: boolean = false;
+  // 半模态开关统一走闸门（单向绑定 + 回退动画期间排队；材质由 moduleSheetOptions 统一给）
+  private modalGate: SheetGate = new SheetGate();
+  private inboxGate: SheetGate = new SheetGate();
+
+  private openModalSheet(): void {
+    if (!this.modalGate.request()) {
+      return;
+    }
+    this.modalShown = true;
+  }
+
+  private closeModalSheet(): void {
+    this.modalGate.beginClose();
+    this.modalShown = false;
+  }
+
+  private openInboxSheet(): void {
+    if (!this.inboxGate.request()) {
+      return;
+    }
+    this.inboxShown = true;
+  }
+
+  private closeInboxSheet(): void {
+    this.inboxGate.beginClose();
+    this.inboxShown = false;
+  }
+
+  @State modalKind: string = '';     // rename / groupNew / groupRename / move
+  @State modalText: string = '';
+  @State modalChatId: string = '';
+  @State modalGroupId: string = '';
   // 审批 Inbox（对齐 RN app/(tabs)/chats.tsx 的 Inbox 卡 + ApprovalInboxSheet）
   @State approvals: ApprovalInfo[] = [];
   @State inboxShown: boolean = false;
@@ -144,6 +185,7 @@ export struct ConnectPanel {
     }).catch((): void => {});
     try {
       this.chats = await fetchChats(conn.baseUrl, conn.token, conn.agentId, this.showArchived);
+      this.groups = await fetchChatGroups(conn.baseUrl, conn.token, conn.agentId);
     } catch (e) {
       this.chats = [];
     } finally {
@@ -151,31 +193,229 @@ export struct ConnectPanel {
     }
   }
 
-  // 会话卡片 ⋯ 菜单（对齐 RN app/(tabs)/chats.tsx：置顶 / 归档 / 删除）
+  // 会话卡片 ⋯ 菜单（对齐 RN app/(tabs)/chats.tsx）：
+  // 非归档 = 重命名 / 置顶 / 归档 / 删除；已归档 = 恢复 / 永久删除
   private chatMenuOf(c: ChatInfo): MenuElement[] {
     const items: MenuElement[] = [];
-    const pin: MenuElement = {
+    if (this.showArchived) {
+      items.push({
+        value: $r('app.string.chat_menu_restore'),
+        action: (): void => {
+          this.chatOp(c, 'unarchive');
+        }
+      });
+      items.push({
+        value: $r('app.string.chat_menu_delete_forever'),
+        action: (): void => {
+          this.confirmDeleteChat(c);
+        }
+      });
+      return items;
+    }
+    items.push({
+      value: $r('app.string.chat_menu_rename'),
+      action: (): void => {
+        this.openRenameModal(c);
+      }
+    });
+    items.push({
       value: c.pinned ? $r('app.string.chat_menu_unpin') : $r('app.string.chat_menu_pin'),
       action: (): void => {
         this.chatOp(c, c.pinned ? 'unpin' : 'pin');
       }
-    };
-    items.push(pin);
-    const arc: MenuElement = {
+    });
+    items.push({
+      value: $r('app.string.chat_menu_move'),
+      action: (): void => {
+        this.openMoveModal(c);
+      }
+    });
+    items.push({
       value: $r('app.string.chat_menu_archive'),
       action: (): void => {
         this.chatOp(c, 'archive');
       }
-    };
-    items.push(arc);
-    const del: MenuElement = {
+    });
+    items.push({
       value: $r('app.string.chat_menu_delete'),
       action: (): void => {
         this.confirmDeleteChat(c);
       }
-    };
-    items.push(del);
+    });
     return items;
+  }
+
+  private openRenameModal(c: ChatInfo): void {
+    this.modalKind = 'rename';
+    this.modalChatId = c.id;
+    this.modalText = c.name;
+    this.openModalSheet();
+  }
+
+  private openGroupEditor(groupId: string): void {
+    this.modalKind = groupId.length > 0 ? 'groupRename' : 'groupNew';
+    this.modalGroupId = groupId;
+    let name: string = '';
+    for (const g of this.groups) {
+      if (g.id === groupId) {
+        name = g.name;
+      }
+    }
+    this.modalText = name;
+    this.openModalSheet();
+  }
+
+  private openMoveModal(c: ChatInfo): void {
+    this.modalKind = 'move';
+    this.modalChatId = c.id;
+    this.openModalSheet();
+  }
+
+  private modalTitleRes(): Resource {
+    if (this.modalKind === 'rename') {
+      return $r('app.string.chat_rename_title');
+    }
+    return this.modalKind === 'groupNew'
+      ? $r('app.string.chat_group_new') : $r('app.string.chat_group_rename');
+  }
+
+  private async submitModal(): Promise<void> {
+    if (this.conn === null) {
+      return;
+    }
+    const conn: QpConnection = this.conn;
+    const name: string = this.modalText.trim();
+    if (name.length === 0) {
+      return;
+    }
+    try {
+      if (this.modalKind === 'rename') {
+        await renameChat(conn.baseUrl, conn.token, conn.agentId, this.modalChatId, name);
+      } else if (this.modalKind === 'groupNew') {
+        await createChatGroup(conn.baseUrl, conn.token, conn.agentId, name);
+      } else {
+        await renameChatGroup(conn.baseUrl, conn.token, conn.agentId, this.modalGroupId, name);
+      }
+      this.closeModalSheet();
+      await this.loadChats(conn);
+    } catch (e) {
+      this.getUIContext().getPromptAction().showToast({ message: this.t($r('app.string.chat_op_failed')) });
+    }
+  }
+
+  private async moveSelected(groupId: string): Promise<void> {
+    if (this.conn === null) {
+      return;
+    }
+    const conn: QpConnection = this.conn;
+    try {
+      await moveChatToGroup(conn.baseUrl, conn.token, conn.agentId, this.modalChatId, groupId);
+      this.closeModalSheet();
+      await this.loadChats(conn);
+    } catch (e) {
+      this.getUIContext().getPromptAction().showToast({ message: this.t($r('app.string.chat_op_failed')) });
+    }
+  }
+
+  private groupMenuOf(g: ChatGroup): MenuElement[] {
+    const items: MenuElement[] = [];
+    items.push({
+      value: $r('app.string.chat_group_rename'),
+      action: (): void => {
+        this.openGroupEditor(g.id);
+      }
+    });
+    items.push({
+      value: $r('app.string.chat_group_delete'),
+      action: (): void => {
+        this.deleteGroup(g);
+      }
+    });
+    return items;
+  }
+
+  private async deleteGroup(g: ChatGroup): Promise<void> {
+    if (this.conn === null) {
+      return;
+    }
+    const conn: QpConnection = this.conn;
+    try {
+      await deleteChatGroup(conn.baseUrl, conn.token, conn.agentId, g.id);
+      await this.loadChats(conn);
+    } catch (e) {
+      this.getUIContext().getPromptAction().showToast({ message: this.t($r('app.string.chat_op_failed')) });
+    }
+  }
+
+  // 统一半模态：输入型（重命名会话 / 新建·重命名分组）或选择型（移动到分组）
+  @Builder
+  modalSheet() {
+    Column() {
+      if (this.modalKind === 'move') {
+        Text($r('app.string.chat_move_title'))
+          .fontSize(UiTokens.fsBody)
+          .fontWeight(FontWeight.Bold)
+          .margin({ bottom: 8 })
+        Column() {
+          Text($r('app.string.chats_group_ungrouped'))
+            .fontSize(UiTokens.fsBody)
+            .fontColor($r('app.color.text_secondary'))
+            .width('100%')
+            .padding({ top: 12, bottom: 12 })
+            .onClick((): void => {
+              this.moveSelected('');
+            })
+          ForEach(this.groups, (g: ChatGroup) => {
+            Text(g.name)
+              .fontSize(UiTokens.fsBody)
+              .fontColor($r('app.color.text_secondary'))
+              .width('100%')
+              .padding({ top: 12, bottom: 12 })
+              .onClick((): void => {
+                this.moveSelected(g.id);
+              })
+          }, (g: ChatGroup) => g.id)
+        }
+        .width('100%')
+      } else {
+        Text(this.modalTitleRes())
+          .fontSize(UiTokens.fsBody)
+          .fontWeight(FontWeight.Bold)
+          .margin({ bottom: 12 })
+        TextInput({ text: $$this.modalText, placeholder: $r('app.string.chat_rename_placeholder') })
+          .height(44)
+          .fontSize(UiTokens.fsBody)
+          .backgroundColor($r('app.color.card_bg'))
+          .fontColor($r('app.color.input_text'))
+          .placeholderColor($r('app.color.placeholder'))
+          .borderRadius(12)
+          .onSubmit((): void => {
+            this.submitModal();
+          })
+        Row() {
+          Button($r('app.string.common_cancel'))
+            .layoutWeight(1)
+            .backgroundColor($r('app.color.card_bg'))
+            .fontColor($r('app.color.text_secondary'))
+            .onClick((): void => {
+              this.closeModalSheet();
+            })
+          Button($r('app.string.common_confirm'))
+            .layoutWeight(1)
+            .margin({ left: 10 })
+            .backgroundColor(this.isDark ? this.theme.accentDark : this.theme.accent)
+            .fontColor(Color.White)
+            .onClick((): void => {
+              this.submitModal();
+            })
+        }
+        .width('100%')
+        .margin({ top: 16 })
+      }
+    }
+    .width('100%')
+    // 顶部留出系统关闭叉（✕）与拖拽条的高度
+    .padding({ left: 20, right: 20, top: 64 })
   }
 
   private confirmDeleteChat(c: ChatInfo): void {
@@ -210,6 +450,9 @@ export struct ConnectPanel {
           conn.token.length > 0 ? conn.token : null, conn.agentId);
       } else if (kind === 'archive') {
         await doRequest(`${base}/archive`, http.RequestMethod.POST, null,
+          conn.token.length > 0 ? conn.token : null, conn.agentId);
+      } else if (kind === 'unarchive') {
+        await doRequest(`${base}/unarchive`, http.RequestMethod.POST, null,
           conn.token.length > 0 ? conn.token : null, conn.agentId);
       } else {
         await doRequest(base, http.RequestMethod.DELETE, null,
@@ -267,7 +510,8 @@ export struct ConnectPanel {
       }, (a: ApprovalInfo) => a.requestId)
     }
     .width('100%')
-    .padding({ left: UiTokens.pageHMargin, right: UiTokens.pageHMargin })
+    // 顶部留出系统关闭叉（✕）与拖拽条的高度
+    .padding({ left: UiTokens.pageHMargin, right: UiTokens.pageHMargin, top: 64 })
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -311,7 +555,7 @@ export struct ConnectPanel {
         GlassCard({
           insetH: 0,
           onTap: (): void => {
-            this.inboxShown = true;
+            this.openInboxSheet();
           }
         }) {
           Row() {
@@ -331,12 +575,11 @@ export struct ConnectPanel {
         }
       }
       .width('100%')
-      .bindSheet($$this.inboxShown, this.inboxSheet(), {
-        height: 560,
-        dragBar: true,
-        showClose: true,
-        backgroundColor: $r('app.color.page_bg')
-      })
+      .bindSheet(this.inboxShown, this.inboxSheet(),
+        moduleSheetOptions(560, this.inboxGate,
+          (v: boolean): void => {
+            this.inboxShown = v;
+          }))
 
       if (this.connected) {
         Column() {
@@ -344,6 +587,11 @@ export struct ConnectPanel {
           this.chatList()
         }
         .width('100%')
+        .bindSheet(this.modalShown, this.modalSheet(),
+          moduleSheetOptions(340, this.modalGate,
+            (v: boolean): void => {
+              this.modalShown = v;
+            }))
       } else {
         this.connectForm()
       }
@@ -407,7 +655,7 @@ export struct ConnectPanel {
         .height(46)
         .margin({ top: 20 })
         .enabled(!this.connecting)
-        // 主题色底（内容区材质不生效，改用通用属性显式给色，避免回落系统蓝）
+        // 主题色底（内容区材质不生效，官方 FAQ 范围规则）；按压反馈由自绘弹性 + 点光源给出
         .backgroundColor(this.isDark ? this.theme.accentDark : this.theme.accent)
         .fontColor(Color.White)
         // 按压 = 弹性缩放 + 点光源；关掉系统按压态（水波纹），动画由 pressTouch 驱动
@@ -426,7 +674,7 @@ export struct ConnectPanel {
         .height(42)
         .margin({ top: 10 })
         .enabled(!this.connecting)
-        // 半透明玻璃底（内容区材质不生效，故显式给底色）
+        // 玻璃底（内容区材质不生效，官方 FAQ 范围规则）
         .backgroundColor($r('app.color.card_glass'))
         .fontColor($r('app.color.btn_gray_text'))
         .scale({ x: this.pressedBtn === 1 ? PRESS_SCALE : 1, y: this.pressedBtn === 1 ? PRESS_SCALE : 1 })
@@ -488,7 +736,7 @@ export struct ConnectPanel {
         Button($r('app.string.cp_reconnect'))
           .layoutWeight(1)
           .height(42)
-          // 半透明玻璃底（内容区材质不生效，故显式给底色）
+          // 玻璃底（内容区材质不生效，官方 FAQ 范围规则）
           .backgroundColor($r('app.color.card_glass'))
           .fontColor($r('app.color.btn_gray_text'))
           .enabled(!this.connecting)
@@ -568,24 +816,84 @@ export struct ConnectPanel {
                 this.toggleArchived();
               }
             })
+          Blank()
+          if (!this.showArchived) {
+            Text($r('app.string.chats_group_new'))
+              .fontSize(UiTokens.fsCaption)
+              .fontColor(this.isDark ? this.theme.accentDark : this.theme.accent)
+              .onClick((): void => {
+                this.openGroupEditor('');
+              })
+          }
         }
         .width('100%')
+        .alignItems(VerticalAlign.Center)
         .margin({ top: UiTokens.titleGap, bottom: 2 })
 
-        ForEach(this.chats, (c: ChatInfo) => {
-          ChatRow({
-            chat: c,
-            menu: this.chatMenuOf(c),
-            onOpen: (): void => {
-              const param: ChatRouteParam = { chatId: c.id, chatName: c.name, sessionId: c.sessionId };
-              this.navStack.pushPath({ name: 'chat', param: param });
-            }
-          })
-        }, (c: ChatInfo) => c.id)
+        ForEach(buildChatSections(this.chats, this.groups), (sec: ChatSection) => {
+          this.sectionBlock(sec)
+        }, (sec: ChatSection) => sec.key)
       }
       .width('100%')
       .padding({ bottom: 32 })
     }
+  }
+
+  // 单个分区（对齐 RN chats.tsx SectionList：header + 会话行）
+  @Builder
+  sectionBlock(sec: ChatSection) {
+    Column() {
+      Row() {
+        if (sec.pinned) {
+          Text('📌')
+            .fontSize(UiTokens.fsChip)
+            .margin({ right: 4 })
+        }
+        Text(sec.title)
+          .fontSize(UiTokens.fsCaption)
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.text_tertiary'))
+        Text(sec.chats.length.toString())
+          .fontSize(UiTokens.fsCaption)
+          .fontColor($r('app.color.text_tertiary'))
+          .margin({ left: 6 })
+        if (sec.chats.length === 0) {
+          Text($r('app.string.chats_group_empty'))
+            .fontSize(UiTokens.fsChip)
+            .fontColor($r('app.color.text_tertiary'))
+            .margin({ left: 6 })
+        }
+        Blank()
+        if (sec.group !== null && sec.group.kind === 'custom') {
+          Button() {
+            Text('⋯')
+              .fontSize(18)
+              .fontColor($r('app.color.text_tertiary'))
+          }
+          .type(ButtonType.Normal)
+          .width(32)
+          .height(32)
+          .padding(0)
+          .backgroundColor(Color.Transparent)
+          .bindMenu(this.groupMenuOf(sec.group))
+        }
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+      .margin({ top: 14, bottom: 2 })
+
+      ForEach(sec.chats, (c: ChatInfo) => {
+        ChatRow({
+          chat: c,
+          menu: this.chatMenuOf(c),
+          onOpen: (): void => {
+            const param: ChatRouteParam = { chatId: c.id, chatName: c.name, sessionId: c.sessionId };
+            this.navStack.pushPath({ name: 'chat', param: param });
+          }
+        })
+      }, (c: ChatInfo) => c.id)
+    }
+    .width('100%')
   }
 
   private async doConnect(): Promise<void> {
@@ -689,7 +997,7 @@ export struct ConnectPanel {
 // 会话行卡（点按 = 打开会话详情）：卡片壳统一走 GlassCard
 @Component
 export struct ChatRow {
-  chat: ChatInfo = { id: '', sessionId: '', name: '', updatedAtMs: 0, pinned: false };
+  chat: ChatInfo = { id: '', sessionId: '', name: '', updatedAtMs: 0, pinned: false, groupId: '' };
   menu: MenuElement[] = [];
   onOpen: () => void = (): void => {};
 
@@ -737,4 +1045,59 @@ export struct ChatRow {
       .alignItems(VerticalAlign.Center)
     }
   }
+}
+
+// ============ 会话分区（对齐 PR #7378 features/chats/grouping.ts buildChatSections）============
+interface ChatSection {
+  key: string;
+  title: ResourceStr;
+  chats: ChatInfo[];
+  pinned: boolean;
+  group: ChatGroup | null;
+}
+
+function groupTitleOf(g: ChatGroup): ResourceStr {
+  if (g.kind === 'default') {
+    return $r('app.string.chats_group_ungrouped');
+  }
+  if (g.kind === 'cron') {
+    return $r('app.string.chats_group_cron');
+  }
+  if (g.kind === 'subagents') {
+    return $r('app.string.chats_group_subagents');
+  }
+  return g.name;
+}
+
+function buildChatSections(chats: ChatInfo[], groups: ChatGroup[]): ChatSection[] {
+  const pinned: ChatInfo[] = chats.filter((c: ChatInfo): boolean => c.pinned);
+  const remaining: ChatInfo[] = chats.filter((c: ChatInfo): boolean => !c.pinned);
+  const sections: ChatSection[] = [];
+  if (pinned.length > 0) {
+    sections.push({
+      key: 'pinned', title: $r('app.string.chats_group_pinned'),
+      chats: pinned, pinned: true, group: null
+    });
+  }
+  const ordered: ChatGroup[] = groups.slice().sort((a: ChatGroup, b: ChatGroup): number => a.order - b.order);
+  const knownIds: string[] = [];
+  let hasDefault: boolean = false;
+  for (const g of ordered) {
+    knownIds.push(g.id);
+    if (g.kind === 'default') {
+      hasDefault = true;
+    }
+    const data: ChatInfo[] = remaining.filter((c: ChatInfo): boolean =>
+      g.kind === 'default' ? (c.groupId.length === 0 || c.groupId === g.id) : c.groupId === g.id);
+    sections.push({ key: g.id, title: groupTitleOf(g), chats: data, pinned: false, group: g });
+  }
+  const ungrouped: ChatInfo[] = remaining.filter((c: ChatInfo): boolean =>
+    (c.groupId.length === 0 && !hasDefault) || (c.groupId.length > 0 && knownIds.indexOf(c.groupId) < 0));
+  if (ungrouped.length > 0 || !hasDefault) {
+    sections.push({
+      key: 'ungrouped', title: $r('app.string.chats_group_ungrouped'),
+      chats: ungrouped, pinned: false, group: null
+    });
+  }
+  return sections;
 }

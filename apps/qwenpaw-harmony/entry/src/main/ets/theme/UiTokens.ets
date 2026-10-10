@@ -14,6 +14,12 @@ export class UiTokens {
   static readonly cardVGap: number = 8;       // 卡片垂直间距
   static readonly chipRadius: number = 6;     // 小标签圆角
   static readonly topInset: number = 130;     // 其余 tab 内容起点（磨砂压暗区下缘 123vp + 边距）
+  // 聊天详情页底部避让：悬浮输入胶囊（本体 58vp）浮在消息层之上且贴底，
+  // 故消息列表与 composer 上方的审批卡/待发附件/错误行都要按此留白，否则会被胶囊压住
+  // （真机实测：胶囊顶 y2489px，屏幕底 2832px → 需 104vp，取 108vp 留呼吸）
+  static readonly chatComposerInset: number = 108;
+  // 悬浮输入胶囊本体高度 = 内边距 8×2 + 控件 42（显式给高，视效组件按百分比取高时依赖父容器确定尺寸）
+  static readonly chatComposerHeight: number = 58;
   static readonly titleSearchStripH: number = 52;  // 智能体页标题栏搜索条区高度（bottomBuilder 叠加在 FREE 标题栏之上）
   // 智能体页内容起点 = 标题栏下缘 151 + 搜索条 52 + 8 呼吸边距（实测：≤203vp 时搜索胶囊压住卡片）
   // 该值同时作为 List 首项占位（spacer）高度：内容可滚到标题栏/搜索条之下（沉浸 + 渐变模糊生效前提）
