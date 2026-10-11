@@ -70,7 +70,7 @@ export struct ModuleSecurity {
     body: string | null): Promise<Record<string, Object> | null> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
-      throw new Error('未连接');
+      throw new Error(this.t($r('app.string.wb_not_connected')));
     }
     const resp: http.HttpResponse = await doRequest(`${c.baseUrl}/api${path}`, method, body,
       c.token.length > 0 ? c.token : null, c.agentId);
@@ -205,7 +205,7 @@ export struct ModuleSecurity {
   private async sendRaw(path: string, body: string): Promise<http.HttpResponse> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
-      throw new Error('未连接');
+      throw new Error(this.t($r('app.string.wb_not_connected')));
     }
     return doRequest(`${c.baseUrl}/api${path}`, http.RequestMethod.PUT, body,
       c.token.length > 0 ? c.token : null, c.agentId);
@@ -299,16 +299,16 @@ export struct ModuleSecurity {
         ModuleLoading(this.t($r('app.string.module_loading')))
       } else {
         IosGroup({ title: this.t($r('app.string.module_sec_group_run')) }) {
-          this.switchRow($r('sys.symbol.checkmark_shield'), 'Sandbox', this.sandboxJson,
+          this.switchRow($r('app.media.shield_check'), 'Sandbox', this.sandboxJson,
             this.sandboxOk, 'sandbox', PATH_SANDBOX)
-          this.switchRow($r('sys.symbol.wrench_and_screwdriver'), 'Tool Guard', this.guardJson,
+          this.switchRow($r('app.media.wrench'), 'Tool Guard', this.guardJson,
             this.guardOk, 'guard', PATH_GUARD)
-          this.switchRow($r('sys.symbol.doc_text'), 'File Guard', this.fileJson,
+          this.switchRow($r('app.media.file_text'), 'File Guard', this.fileJson,
             this.fileOk, 'file', PATH_FILE)
         }
         IosGroup({ title: this.t($r('app.string.module_sec_group_chain')) }) {
           IosRow({
-            icon: $r('sys.symbol.checkmark_shield'),
+            icon: $r('app.media.shield_check'),
             label: 'Skill Scanner',
             subtitle: this.scannerOk ? '' : this.t($r('app.string.module_sec_unsupported')),
             trailing: this.scannerOk ? this.modeLabel() : '',
@@ -320,7 +320,7 @@ export struct ModuleSecurity {
         }
         IosGroup({ title: this.t($r('app.string.module_sec_group_net')) }) {
           IosRow({
-            icon: $r('sys.symbol.link'),
+            icon: $r('app.media.link'),
             label: this.t($r('app.string.module_sec_hosts')),
             subtitle: this.hostsOk
               ? (this.hostsText().length > 0 ? this.hostsText()

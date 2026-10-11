@@ -119,7 +119,7 @@ export struct ModuleTools {
     body: string | null): Promise<http.HttpResponse> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
-      throw new Error('未连接');
+      throw new Error(this.t($r('app.string.wb_not_connected')));
     }
     return doRequest(`${c.baseUrl}/api${path}`, method, body,
       c.token.length > 0 ? c.token : null, c.agentId);
@@ -245,7 +245,7 @@ export struct ModuleTools {
       } else if (!this.loaded) {
         ModuleLoading(this.t($r('app.string.module_loading')))
       } else if (this.items.length === 0) {
-        ModuleEmpty($r('sys.symbol.wrench_and_screwdriver'),
+        ModuleEmpty($r('app.media.wrench'),
           this.t($r('app.string.module_tools_empty_title')),
           this.t($r('app.string.module_tools_empty_subtitle')))
       } else {
@@ -253,7 +253,7 @@ export struct ModuleTools {
           + `${this.enabledCount()}/${this.items.length} ${this.t($r('app.string.module_tools_enabled'))}` }) {
           ForEach(this.items, (item: ToolItem) => {
             IosRow({
-              icon: $r('sys.symbol.wrench_and_screwdriver'),
+              icon: $r('app.media.wrench'),
               label: item.name,
               subtitle: item.description,
               hasSwitch: true,

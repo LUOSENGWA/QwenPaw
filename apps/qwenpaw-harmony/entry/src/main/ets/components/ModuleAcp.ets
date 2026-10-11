@@ -453,7 +453,7 @@ export struct ModuleAcp {
       } else {
         IosGroup({ title: this.t($r('app.string.module_acp_runtime')) }) {
           IosRow({
-            icon: $r('sys.symbol.code_square'),
+            icon: $r('app.media.square_code'),
             label: 'Node.js',
             subtitle: `${this.availableRuntimes} ${this.t($r('app.string.module_acp_runtimes'))}`,
             trailing: this.effectiveNodePath.length > 0 ? this.effectiveNodePath
@@ -467,7 +467,7 @@ export struct ModuleAcp {
         }
         IosGroup({ title: `ACP Agents · ${this.agents.length}` }) {
           IosRow({
-            icon: $r('sys.symbol.plus'),
+            icon: $r('app.media.plus'),
             label: this.t($r('app.string.module_acp_add')),
             subtitle: this.t($r('app.string.module_acp_add_hint')),
             tappable: true,
@@ -478,7 +478,7 @@ export struct ModuleAcp {
           })
           ForEach(this.agents, (a: AcpAgent) => {
             IosRow({
-              icon: $r('sys.symbol.link'),
+              icon: $r('app.media.link'),
               label: a.name,
               subtitle: `${a.command} · ${a.trusted
                 ? this.t($r('app.string.module_acp_trusted'))
@@ -496,7 +496,7 @@ export struct ModuleAcp {
           }, (a: AcpAgent) => a.name)
         }
         if (this.agents.length === 0) {
-          ModuleEmpty($r('sys.symbol.link'),
+          ModuleEmpty($r('app.media.link'),
             this.t($r('app.string.module_acp_empty_title')),
             this.t($r('app.string.module_acp_empty_copy')))
         }

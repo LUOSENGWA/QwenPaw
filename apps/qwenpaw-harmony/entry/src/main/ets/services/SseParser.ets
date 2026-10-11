@@ -4,6 +4,8 @@
  * 传输层（TCP socket 手拼 HTTP GET 收流）在下一块接入，解析层先行锁定协议语义。
  */
 
+import { t } from './I18n';
+
 export interface SseEvent {
   event: string;   // '' = 无 event: 行
   data: string;
@@ -13,6 +15,48 @@ export interface StreamDelta {
   messageId: string;
   kind: string;    // message / reasoning / tool
   text: string;
+  // 工具事件的载荷不在 text 里：wire 实测 content 的 data 项携带
+  // plugin_call = {call_id, name, arguments}、plugin_call_output = {call_id, name, output, state}
+  toolName?: string;
+  toolState?: string;
+  toolInput?: string;
+  toolOutput?: string;
+}
+
+// 取 content 里第一条带 data 对象的项（工具事件的载荷所在地）
+function toolDataOf(content: Object): Record<string, Object> | null {
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  for (const item of content as Object[]) {
+    const raw: Object = (item as Record<string, Object>)['data'];
+    if (typeof raw === 'object' && raw !== null && !Array.isArray(raw)) {
+      return raw as Record<string, Object>;
+    }
+  }
+  return null;
+}
+
+// 工具段增量：名称 / 参数 / 输出 / 状态至少带一项
+function toolDeltaOf(messageId: string, data: Record<string, Object>, kind: string): StreamDelta | null {
+  const name: Object = data['name'];
+  const args: Object = data['arguments'];
+  const out: Object = data['output'];
+  const st: Object = data['state'];
+  const hasName: boolean = typeof name === 'string' && (name as string).length > 0;
+  const hasArgs: boolean = typeof args === 'string' && (args as string).length > 0;
+  const hasOut: boolean = typeof out === 'string' && (out as string).length > 0;
+  const hasState: boolean = typeof st === 'string' && (st as string).length > 0;
+  if (!hasName && !hasArgs && !hasOut && !hasState) {
+    return null;
+  }
+  return {
+    messageId: messageId.length > 0 ? messageId : 'stream', kind: kind, text: '',
+    toolName: hasName ? name as string : undefined,
+    toolInput: hasArgs ? args as string : undefined,
+    toolOutput: hasOut ? out as string : undefined,
+    toolState: hasState ? st as string : undefined
+  };
 }
 
 export class SseParser {
@@ -89,7 +133,7 @@ export function streamError(event: SseEvent): string | null {
   const error: Object = payload['error'];
   if (typeof error === 'string') {
     const s: string = (error as string).trim();
-    return s.length > 0 ? s : '模型调用失败';
+    return s.length > 0 ? s : t($r('app.string.sse_model_call_failed'));
   }
   if (payload['object'] !== 'response' || payload['status'] !== 'failed') {
     return null;
@@ -107,7 +151,7 @@ export function streamError(event: SseEvent): string | null {
       return (message as string).trim();
     }
   }
-  return '模型调用失败';
+  return t($r('app.string.sse_model_call_failed'));
 }
 
 export class StreamEventClassifier {
@@ -127,6 +171,14 @@ export class StreamEventClassifier {
       }
       const text: string = messageDeltaText(payload['content']);
       if (text.length === 0) {
+        // 工具调用 / 工具输出的内容全是 data 项（无文本）——旧实现此处直接丢弃，
+        // 结果在途回合里完全没有工具段（工具调用与文件读写编辑都不显示）
+        if (kind === 'tool') {
+          const data: Record<string, Object> | null = toolDataOf(payload['content']);
+          if (data !== null) {
+            return toolDeltaOf(messageId, data, kind);
+          }
+        }
         return null;
       }
       return { messageId: messageId.length > 0 ? messageId : 'stream', kind: kind, text: text };
@@ -138,6 +190,13 @@ export class StreamEventClassifier {
     const messageId: string = typeof msgId === 'string' ? msgId as string : 'stream';
     const text: Object = payload['text'];
     if (typeof text !== 'string' || (text as string).length === 0) {
+      const k0: string = this.messageTypes.get(messageId) ?? 'message';
+      if (k0 === 'tool' && payload['type'] === 'data') {
+        const only: Record<string, Object> | null = toolDataOf([payload]);
+        if (only !== null) {
+          return toolDeltaOf(messageId, only, k0);
+        }
+      }
       return null;
     }
     const kind: string = this.messageTypes.get(messageId) ?? 'message';

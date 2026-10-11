@@ -516,7 +516,7 @@ export struct ModuleProjectGit {
       } else {
         IosGroup({ title: this.t($r('app.string.module_git_group')) }) {
           IosRow({
-            icon: $r('sys.symbol.code_square'),
+            icon: $r('app.media.square_code'),
             label: this.t($r('app.string.module_git_coding')),
             subtitle: this.t($r('app.string.module_git_coding_hint')),
             hasSwitch: true,
@@ -527,7 +527,7 @@ export struct ModuleProjectGit {
           })
           if (this.project !== null) {
             IosRow({
-              icon: $r('sys.symbol.folder'),
+              icon: $r('app.media.folder'),
               label: this.project!.name.length > 0 ? this.project!.name
                 : this.t($r('app.string.module_git_workspace')),
               subtitle: this.project!.path,
@@ -536,7 +536,7 @@ export struct ModuleProjectGit {
             })
           }
           IosRow({
-            icon: $r('sys.symbol.folder_badge_plus'),
+            icon: $r('app.media.folder_plus'),
             label: this.t($r('app.string.module_git_new')),
             subtitle: this.t($r('app.string.module_git_new_hint')),
             tappable: !this.busy,
@@ -545,7 +545,7 @@ export struct ModuleProjectGit {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.arrow_up_to_line'),
+            icon: $r('app.media.arrow_up_to_line'),
             label: this.t($r('app.string.module_git_import')),
             tappable: !this.busy,
             onPress: (): void => {
@@ -554,7 +554,7 @@ export struct ModuleProjectGit {
           })
           if (this.project !== null && !this.project!.isDefault) {
             IosRow({
-              icon: $r('sys.symbol.arrow_counterclockwise'),
+              icon: $r('app.media.rotate_ccw'),
               label: this.t($r('app.string.module_git_restore')),
               tappable: !this.busy,
               onPress: (): void => {
@@ -569,7 +569,7 @@ export struct ModuleProjectGit {
           IosGroup({ title: `${this.t($r('app.string.module_git_projects'))} · ${this.projects.length}` }) {
             ForEach(this.projects, (p: ProjectListItem) => {
               IosRow({
-                icon: p.isActive ? $r('sys.symbol.checkmark') : $r('sys.symbol.folder'),
+                icon: p.isActive ? $r('app.media.check') : $r('app.media.folder'),
                 label: p.name,
                 subtitle: p.isGit ? this.t($r('app.string.module_git_is_git')) : p.path,
                 trailing: p.isActive ? this.t($r('app.string.module_git_current')) : '',
@@ -585,7 +585,7 @@ export struct ModuleProjectGit {
         if (this.hasGit) {
           IosGroup({ title: this.t($r('app.string.module_git_git')) }) {
             IosRow({
-              icon: $r('sys.symbol.arrow_left_arrow_right'),
+              icon: $r('app.media.arrow_left_right'),
               label: this.branch.length > 0 ? this.branch
                 : this.t($r('app.string.module_git_branch_unnamed')),
               subtitle: `ahead ${this.ahead} · behind ${this.behind}`,
@@ -596,7 +596,7 @@ export struct ModuleProjectGit {
               }
             })
             IosRow({
-              icon: $r('sys.symbol.checkmark_circle'),
+              icon: $r('app.media.circle_check'),
               label: this.t($r('app.string.module_git_commit_staged')),
               subtitle: this.t($r('app.string.module_git_commit_hint')),
               tappable: !this.busy,
@@ -606,7 +606,7 @@ export struct ModuleProjectGit {
             })
             ForEach(this.changes, (c: GitChange) => {
               IosRow({
-                icon: $r('sys.symbol.difference'),
+                icon: $r('app.media.file_diff'),
                 label: c.path,
                 subtitle: c.status,
                 trailing: c.staged ? this.t($r('app.string.module_git_staged'))
@@ -623,7 +623,7 @@ export struct ModuleProjectGit {
             IosGroup({ title: this.t($r('app.string.module_git_recent')) }) {
               ForEach(this.commits, (k: CommitInfo) => {
                 IosRow({
-                  icon: $r('sys.symbol.checkmark_circle'),
+                  icon: $r('app.media.circle_check'),
                   label: k.message,
                   subtitle: `${k.author} · ${k.date}`,
                   trailing: k.hash.length > 7 ? k.hash.substring(0, 7) : k.hash,
@@ -637,7 +637,7 @@ export struct ModuleProjectGit {
             }
           }
         } else {
-          ModuleEmpty($r('sys.symbol.arrow_left_arrow_right'),
+          ModuleEmpty($r('app.media.arrow_left_right'),
             this.t($r('app.string.module_git_not_repo_title')),
             this.t($r('app.string.module_git_not_repo_subtitle')))
         }

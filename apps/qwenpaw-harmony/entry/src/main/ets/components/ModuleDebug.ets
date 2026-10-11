@@ -146,7 +146,7 @@ export struct ModuleDebug {
       } else {
         IosGroup({ title: this.t($r('app.string.module_dbg_group')) }) {
           IosRow({
-            icon: $r('sys.symbol.doc_plaintext'),
+            icon: $r('app.media.file_text'),
             label: this.t($r('app.string.module_dbg_recent')),
             subtitle: `${this.logLines} ${this.t($r('app.string.module_dbg_lines'))} · `
               + `${this.formatBytes(this.logSize)}`,
@@ -158,7 +158,7 @@ export struct ModuleDebug {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.arrow_2_circlepath'),
+            icon: $r('app.media.refresh_cw'),
             label: this.t($r('app.string.module_dbg_refresh')),
             subtitle: this.t($r('app.string.module_dbg_refresh_hint')),
             tappable: true,
@@ -167,7 +167,7 @@ export struct ModuleDebug {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.doc_text'),
+            icon: $r('app.media.file_text'),
             label: this.t($r('app.string.module_dbg_path')),
             subtitle: this.logPath.length > 0 ? this.logPath
               : this.t($r('app.string.module_dbg_no_path'))

@@ -70,7 +70,7 @@ export struct ModuleOperations {
     body: string | null): Promise<http.HttpResponse> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
-      throw new Error('未连接');
+      throw new Error(this.t($r('app.string.wb_not_connected')));
     }
     return doRequest(`${c.baseUrl}/api${path}`, method, body,
       c.token.length > 0 ? c.token : null, c.agentId);
@@ -261,19 +261,19 @@ export struct ModuleOperations {
       } else {
         IosGroup({ title: this.t($r('app.string.module_ops_group_token')) }) {
           IosRow({
-            icon: $r('sys.symbol.arrow_up_to_line'),
+            icon: $r('app.media.arrow_up_to_line'),
             label: this.t($r('app.string.module_ops_prompt')),
             trailing: this.tokenOk ? this.stat(this.tokenJson, 'total_prompt_tokens')
               : this.t($r('app.string.module_ops_unsupported_short'))
           })
           IosRow({
-            icon: $r('sys.symbol.arrow_down_to_line'),
+            icon: $r('app.media.arrow_down_to_line'),
             label: this.t($r('app.string.module_ops_completion')),
             trailing: this.tokenOk ? this.stat(this.tokenJson, 'total_completion_tokens')
               : this.t($r('app.string.module_ops_unsupported_short'))
           })
           IosRow({
-            icon: $r('sys.symbol.arrow_clockwise'),
+            icon: $r('app.media.refresh_cw'),
             label: this.t($r('app.string.module_ops_cache')),
             trailing: this.tokenOk ? this.stat(this.tokenJson, 'total_cache_read_tokens')
               : this.t($r('app.string.module_ops_unsupported_short'))
@@ -281,25 +281,25 @@ export struct ModuleOperations {
         }
         IosGroup({ title: this.t($r('app.string.module_ops_group_stats')) }) {
           IosRow({
-            icon: $r('sys.symbol.person_2'),
+            icon: $r('app.media.users'),
             label: this.t($r('app.string.module_ops_active_sessions')),
             trailing: this.statsOk ? this.stat(this.statsJson, 'total_active_sessions')
               : this.t($r('app.string.module_ops_unsupported_short'))
           })
           IosRow({
-            icon: $r('sys.symbol.line_message'),
+            icon: $r('app.media.message_circle'),
             label: this.t($r('app.string.module_ops_messages')),
             trailing: this.statsOk ? this.stat(this.statsJson, 'total_messages')
               : this.t($r('app.string.module_ops_unsupported_short'))
           })
           IosRow({
-            icon: $r('sys.symbol.person'),
+            icon: $r('app.media.user'),
             label: this.t($r('app.string.module_ops_user_messages')),
             trailing: this.statsOk ? this.stat(this.statsJson, 'total_user_messages')
               : this.t($r('app.string.module_ops_unsupported_short'))
           })
           IosRow({
-            icon: $r('sys.symbol.wand_and_stars'),
+            icon: $r('app.media.wand_sparkles'),
             label: this.t($r('app.string.module_ops_assistant_messages')),
             trailing: this.statsOk ? this.stat(this.statsJson, 'total_assistant_messages')
               : this.t($r('app.string.module_ops_unsupported_short'))
@@ -308,7 +308,7 @@ export struct ModuleOperations {
         IosGroup({ title: `${this.t($r('app.string.module_ops_group_backups'))} · ${this.backups.length}` }) {
           ForEach(this.backups, (row: BackupRow) => {
             IosRow({
-              icon: $r('sys.symbol.doc_text'),
+              icon: $r('app.media.file_text'),
               label: row.name,
               subtitle: row.description.length > 0 ? row.description : row.createdAt,
               tappable: this.backupsOk && !this.busy,
@@ -319,7 +319,7 @@ export struct ModuleOperations {
           }, (row: BackupRow) => row.id)
         }
         if (this.backupsOk && this.backups.length === 0) {
-          ModuleEmpty($r('sys.symbol.doc_text'),
+          ModuleEmpty($r('app.media.file_text'),
             this.t($r('app.string.module_ops_empty_title')),
             this.t($r('app.string.module_ops_empty_subtitle')))
         }

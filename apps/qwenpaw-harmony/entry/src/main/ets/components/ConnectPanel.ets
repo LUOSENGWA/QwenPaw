@@ -4,33 +4,44 @@
  * 状态机：disconnected / connecting / connected / failed。
  */
 
-import { common, Configuration, ConfigurationConstant, abilityAccessCtrl, Permissions } from '@kit.AbilityKit';
+import { common, Configuration, ConfigurationConstant } from '@kit.AbilityKit';
+import { uiMaterial } from '@kit.ArkUI';
 
 import { GlassCard } from './GlassCard';
+import { SegmentedControl } from './SegmentedControl';
 import { SheetGate, moduleSheetOptions } from './SheetGate';
+import { WorkspaceBadge } from './WorkspaceSwitcher';
 import { http } from '@kit.NetworkKit';
 import { emitter } from '@kit.BasicServicesKit';
-import { scanBarcode, scanCore } from '@kit.ScanKit';
 import { QpConnection, loadConnection, saveConnection, clearConnection } from '../services/ConnectionStore';
-import { connectToQwenPaw, describeConnectError, doRequest } from '../services/ConnectionService';
-import { parsePairingUri, parseManualInput, hostOf } from '../services/PairingModel';
+import {
+  ChatActivityRecord, loadActivity, saveActivity, reconcileActivity, markActivityRead, resolveActivity
+} from '../services/ChatActivity';
+import {
+  connectToQwenPaw, describeConnectError, verifyConnection, ConnectOutcome, doRequest
+} from '../services/ConnectionService';
+import { parsePairingUri, parseManualInput } from '../services/PairingModel';
+import { ScanRouteParam, CHAT_PLACEHOLDER_ROUTE } from '../services/AppEvents';
 import {
   fetchChats, ChatInfo, relativeTime, renameChat, ChatGroup, fetchChatGroups,
-  createChatGroup, renameChatGroup, deleteChatGroup, moveChatToGroup
+  createChatGroup, renameChatGroup, deleteChatGroup, moveChatToGroup, createChat,
+  pinChat, setChatArchived, deleteChat
 } from '../services/ChatsService';
 import { ChatRouteParam, CHAT_CLOSED_EVENT } from '../services/ChatDetailService';
+import { LastChat, saveLastChat, loadLastChat, clearLastChat } from '../services/LastChat';
 import { AGENT_CHANGE_EVENT } from '../services/AgentsService';
-import { CONN_CHANGE_EVENT } from './WorkbenchTab';
+import { CONN_CHANGE_EVENT, CONN_STORE_EVENT } from './WorkbenchTab';
 import { ThemeManager, ThemeSnapshot, ThemeListener } from '../theme/ThemeManager';
 import { UiTokens } from '../theme/UiTokens';
 import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
 import { ApprovalInfo, fetchApprovals, approveRequest, denyRequest } from '../services/ApprovalsService';
 import { ApprovalCard } from './ApprovalCard';
+import { menuOptions } from '../theme/MenuMaterial';
 
-// 会话置顶请求体（对齐 RN client.ts：PUT /chats/{id} {name?, pinned?, group_id?}）
-interface ChatPinBody {
-  pinned: boolean;
-}
+// 会话 / 已归档 连排按钮几何：参考社区页第一排（一个大框 + 框内滑块跑过去），但取小号
+// （社区 SEG_H = 32 + 上下各 4 内边距；这里 26 + 各 3，见 components/SegmentedControl.ets）
+const SWITCH_H: number = 26;
+const SWITCH_W: number = 170;
 
 @Component
 export struct ConnectPanel {
@@ -42,12 +53,29 @@ export struct ConnectPanel {
   @State errorMsg: string = '';
   @State baseUrlInput: string = '';
   @State ticketInput: string = '';
-  @State connHost: string = '';
   @State connUser: string = '';
-  @State connMode: string = '';
   @State agentNames: string[] = [];
+  // 与 agentNames 一一对应的智能体 id（回显当前选中项用）
+  @State agentIds: string[] = [];
+  // 会话活动态记录（对齐 7378 chatActivityModel：running 看服务端 status，unread 由本地记录推导）
+  @State activityMap: Map<string, ChatActivityRecord> = new Map<string, ChatActivityRecord>();
+  // 工作区徽章重取信号（切换/取消配对后自增）
+  @State wsToken: number = 0;
   @State chats: ChatInfo[] = [];
   @State showArchived: boolean = false;
+  // 会话 / 已归档 连排按钮与弹层操作键的沉浸材质：内容区只有 Toggle(ToggleType.Button) 外壳能生效
+  // （官方豁免名单 = 弹窗类 / Slider / Toggle / Select），故只建一次复用
+  private switcherMaterial: SystemUiMaterial = new uiMaterial.ImmersiveMaterial({
+    style: uiMaterial.ImmersiveStyle.THIN,
+    interactive: true,
+    lightEffect: {}
+  });
+  // 会话搜索关键词（对齐 7378 chats.tsx 的 query）与“新建会话”进行中态
+  // 搜索词由标题栏工具条（SearchPill）持有并单向同步进来（变更即过滤；页内搜索条已移除）
+  @Prop query: string = '';
+  // 当前前台底部页签（0=会话）：会话列表只在会话页处于前台时轮询（对齐 7378 useFocusEffect 作用域）
+  @Prop @Watch('onTabActive') activeTab: number = 0;
+  @State creating: boolean = false;
   // 会话分组（对齐 RN features/chats/grouping.ts + chats.tsx）
   @State groups: ChatGroup[] = [];
   // 统一半模态（重命名会话 / 新建·重命名分组 / 移动到分组）：
@@ -89,6 +117,9 @@ export struct ConnectPanel {
   @State approvals: ApprovalInfo[] = [];
   @State inboxShown: boolean = false;
   @State chatsLoading: boolean = false;
+  // 列表展开动画的驱动位：取数期间为假（只显示转圈），数据到位后在 animateTo 里置真，
+  // 由透明度 + 位移两条属性补间出「展开」观感（属性动画由状态驱动，不依赖 transition 触发时机）
+  @State listRevealed: boolean = false;
   @State isDark: boolean = false;
   @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
   // 各按钮按下的编号（0=连接 1=扫码 2=重连 3=断开，-1=无）：一个状态驱动四个按钮的弹性缩放与点光源
@@ -109,6 +140,76 @@ export struct ConnectPanel {
       }
     });
   };
+
+  // 连接存储在别处被改写（设置页切换/移除/断开/重连）：重取当前连接并复核
+  private connStoreListener: (data: emitter.EventData) => void = (_data: emitter.EventData): void => {
+    this.reloadAfterSwitch();
+  };
+
+  // 工作区切换 / 取消配对 / 扫码配对回跳后：重取当前连接并复核（徽章回调）
+  private async reloadAfterSwitch(): Promise<void> {
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const conn: QpConnection | null = await loadConnection(ctx);
+    this.wsToken++;
+    if (conn === null) {
+      this.connected = false;
+      this.chats = [];
+      this.agentNames = [];
+      this.statusText = this.t($r('app.string.cp_status_disconnected'));
+      return;
+    }
+    this.baseUrlInput = conn.baseUrl;
+    this.ticketInput = '';
+    // 已落盘连接直接复核（含 token，不重新兑换配对码）
+    await this.applyStoredConnection(conn);
+  }
+
+  // 扫码配对页（路由 scan）：配对成功后由该页落盘连接，回到本页用 onPop 刷新
+  private openScan(): void {
+    const param: ScanRouteParam = { stack: this.navStack };
+    this.navStack.pushPathByName('scan', param, (_info: PopInfo): void => {
+      this.reloadAfterSwitch();
+    });
+  }
+
+  // 落盘连接复核：票据校验 + 智能体探测（旧实现回落成"空配对码重连"，开账号体系的服务必然失败）
+  private async applyStoredConnection(conn: QpConnection): Promise<void> {
+    if (this.connecting) {
+      return;
+    }
+    this.connecting = true;
+    this.errorMsg = '';
+    this.statusText = this.t($r('app.string.cp_status_connecting'));
+    this.statusColor = $r('app.color.status_warning');
+    try {
+      const outcome: ConnectOutcome = await verifyConnection(conn);
+      this.applyOutcome(outcome);
+    } catch (e) {
+      const err: Error = e as Error;
+      this.connected = false;
+      this.statusText = this.t($r('app.string.cp_status_failed'));
+      this.statusColor = $r('app.color.status_error');
+      this.errorMsg = describeConnectError(conn.baseUrl, err);
+    } finally {
+      this.connecting = false;
+    }
+  }
+
+  // 连接成功后的统一收口（手输/扫码配对与已落盘复核共用）
+  private applyOutcome(outcome: ConnectOutcome): void {
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    saveConnection(ctx, outcome.connection).then((): void => {
+      emitter.emit(CONN_CHANGE_EVENT);
+    });
+    this.connected = true;
+    this.connUser = outcome.connection.username;
+    this.agentNames = outcome.agentNames;
+    this.agentIds = outcome.agentIds;
+    this.statusText =
+      `${this.t($r('app.string.cp_status_connected'))} · ${outcome.agentCount}${this.t($r('app.string.cp_agents_unit'))}`;
+    this.statusColor = $r('app.color.status_success');
+    this.loadChats(outcome.connection);
+  }
 
   aboutToAppear(): void {
     this.statusText = this.t($r('app.string.cp_status_disconnected'));
@@ -142,11 +243,14 @@ export struct ConnectPanel {
     };
     emitter.on(AGENT_CHANGE_EVENT, this.agentListener);
     emitter.on(CHAT_CLOSED_EVENT, this.chatClosedListener);
+    emitter.on(CONN_STORE_EVENT, this.connStoreListener);
   }
 
   aboutToDisappear(): void {
+    this.stopChatPoll();
     emitter.off(AGENT_CHANGE_EVENT, this.agentListener);
     emitter.off(CHAT_CLOSED_EVENT, this.chatClosedListener);
+    emitter.off(CONN_STORE_EVENT, this.connStoreListener);
     if (this.themeListener !== null) {
       ThemeManager.get().unsubscribe(this.themeListener);
       this.themeListener = null;
@@ -169,28 +273,156 @@ export struct ConnectPanel {
     });
   }
 
-  // 会话 / 已归档 视图切换（对齐 RN chats.tsx 的 showArchived）
+  // 会话 / 已归档 视图切换（对齐 RN chats.tsx 的 showArchived）。
+  // 滑块动画与跟手拖动都在共用组件 components/SegmentedControl.ets 内，这里只管视图数据。
   private toggleArchived(): void {
-    this.showArchived = !this.showArchived;
+    this.setArchived(!this.showArchived);
+  }
+
+  private setArchived(want: boolean): void {
+    if (want === this.showArchived) {
+      return;
+    }
+    this.showArchived = want;
     if (this.conn !== null) {
       this.loadChats(this.conn);
     }
   }
 
+  // 当前智能体名首字（口径同 AgentsTab.initialOf：取首字符大写）
+  // 当前智能体显示名（选中的那一个，不是列表首个）——徽章与头像首字共用
+  private currentAgentName(): string {
+    const id: string = this.conn !== null ? this.conn.agentId : '';
+    const i: number = this.agentIds.indexOf(id);
+    if (i >= 0 && i < this.agentNames.length) {
+      return this.agentNames[i];
+    }
+    return id.length > 0 ? id : this.connUser;
+  }
+
+  private agentInitial(): string {
+    const n: string = this.currentAgentName();
+    return n.length > 0 ? n.substring(0, 1).toUpperCase() : '';
+  }
+
+  private connKeyOf(): string {
+    return this.conn !== null ? this.conn.baseUrl.toLowerCase() : '';
+  }
+
+  private agentKeyOf(): string {
+    return this.conn !== null ? this.conn.agentId : '';
+  }
+
+  // 用服务端会话列表校正本地记录并持久化（对齐 7378 reconcileChatActivity）
+  private async syncActivity(): Promise<void> {
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const first: Map<string, ChatActivityRecord> = await loadActivity(ctx);
+    this.activityMap = reconcileActivity(first, this.connKeyOf(), this.agentKeyOf(), this.chats);
+    await saveActivity(ctx, this.activityMap);
+  }
+
+  // 行内活动态：read 归入 idle（7378 resolveChatActivity 四值里 read 与 idle 同档观感）
+  private activityOf(chat: ChatInfo): string {
+    const a: string = resolveActivity(this.connKeyOf(), this.agentKeyOf(), chat, this.activityMap);
+    return a === 'read' ? 'idle' : a;
+  }
+
+  // ForEach 键：ArkUI 只在**键**变化时重跑 itemGenerator（官方 FAQ faqs-arkui-41），
+  // 故键里必须带上会改变渲染结果的数据——否则 4s 轮询拿到新数据后节点被复用，
+  // 标题/时间/运行状态灯会停在旧值（会话增删才会变，故此前看不出问题）。
+  private chatKeyOf(c: ChatInfo): string {
+    return `${c.id}|${c.name}|${c.updatedAtMs}|${c.pinned ? 1 : 0}|${c.status}|${this.activityOf(c)}`;
+  }
+
+  // 分区键 = 分区标识 + 搜索词 + 逐行键（含主题/视图/头像字等影响渲染的外部态）
+  private sectionKeyOf(sec: ChatSection): string {
+    const keys: string[] = sec.chats.map((c: ChatInfo): string => this.chatKeyOf(c));
+    const theme: string = `${this.showArchived ? 1 : 0}|${this.isDark ? 1 : 0}|${this.agentInitial()}`;
+    return `${sec.key}|${this.query}|${theme}|${keys.join(',')}`;
+  }
+
+  // 进入会话：清 unread（对齐 7378 markActivityRead）
+  private async markRead(chat: ChatInfo): Promise<void> {
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    this.activityMap = markActivityRead(this.activityMap, this.connKeyOf(), this.agentKeyOf(), chat, true);
+    await saveActivity(ctx, this.activityMap);
+  }
+
+  private chatPollTimer: number = -1;
+  private chatPollBusy: boolean = false;
+
+  // 会话列表定时静默刷新（对齐 7378 (tabs)/chats.tsx 的 useFocusEffect + setInterval(poll, 4000)）：
+  // 只在会话页处于前台时轮询，切走即停；失败静默保留原列表。
+  private onTabActive(): void {
+    if (this.activeTab === 0) {
+      this.startChatPoll();
+      // 从别的页面切回来：恢复上次打开的会话（本页没有已打开会话时）
+      this.maybeReopenLastChat();
+    } else {
+      this.stopChatPoll();
+    }
+  }
+
+  private startChatPoll(): void {
+    if (this.chatPollTimer >= 0 || this.conn === null) {
+      return;
+    }
+    this.chatPollTimer = setInterval((): void => {
+      this.pollRefreshChats();
+    }, 4000);
+  }
+
+  private stopChatPoll(): void {
+    if (this.chatPollTimer >= 0) {
+      clearInterval(this.chatPollTimer);
+      this.chatPollTimer = -1;
+    }
+  }
+
+  // 静默刷新：不置 chatsLoading（避免闪烁）；顺带刷新待审批（与 RN poll 同两项）
+  private async pollRefreshChats(): Promise<void> {
+    if (this.chatPollBusy || this.conn === null) {
+      return;
+    }
+    this.chatPollBusy = true;
+    const conn: QpConnection = this.conn;
+    try {
+      this.chats = await fetchChats(conn.baseUrl, conn.token, conn.agentId, this.showArchived);
+      await this.syncActivity();
+    } catch (e) {
+      // 静默刷新失败保留原列表
+    }
+    fetchApprovals(conn.baseUrl, conn.token, conn.agentId).then((list: ApprovalInfo[]): void => {
+      this.approvals = list;
+    }).catch((): void => {});
+    this.chatPollBusy = false;
+  }
+
   private async loadChats(conn: QpConnection): Promise<void> {
     this.conn = conn;
     this.chatsLoading = true;
+    this.listRevealed = false;
     fetchApprovals(conn.baseUrl, conn.token, conn.agentId).then((list: ApprovalInfo[]): void => {
       this.approvals = list;
     }).catch((): void => {});
     try {
       this.chats = await fetchChats(conn.baseUrl, conn.token, conn.agentId, this.showArchived);
+      await this.syncActivity();
       this.groups = await fetchChatGroups(conn.baseUrl, conn.token, conn.agentId);
     } catch (e) {
       this.chats = [];
     } finally {
       this.chatsLoading = false;
     }
+    this.revealList();
+    this.startChatPoll();
+  }
+
+  // 列表数据到位后展开：状态驱动 260ms 补间（透明度 + 位移），替代此前的 transition
+  private revealList(): void {
+    this.getUIContext().animateTo({ duration: 260, curve: Curve.EaseOut }, (): void => {
+      this.listRevealed = true;
+    });
   }
 
   // 会话卡片 ⋯ 菜单（对齐 RN app/(tabs)/chats.tsx）：
@@ -393,21 +625,40 @@ export struct ConnectPanel {
             this.submitModal();
           })
         Row() {
-          Button($r('app.string.common_cancel'))
-            .layoutWeight(1)
-            .backgroundColor($r('app.color.card_bg'))
-            .fontColor($r('app.color.text_secondary'))
-            .onClick((): void => {
+          // 面板操作键：Toggle 外壳 + 沉浸材质（内容区 Button 直接挂材质是空转；Toggle 在豁免名单内）
+          Toggle({ type: ToggleType.Button, isOn: false }) {
+            Text($r('app.string.common_cancel'))
+              .fontSize(UiTokens.fsBody)
+              .fontColor($r('app.color.text_secondary'))
+          }
+          .layoutWeight(1)
+          .height(46)
+          .padding(0)
+          .backgroundColor(Color.Transparent)
+          .selectedColor(Color.Transparent)
+          .systemMaterial(this.switcherMaterial)
+          .onChange((isOn: boolean): void => {
+            if (isOn) {
               this.closeModalSheet();
-            })
-          Button($r('app.string.common_confirm'))
-            .layoutWeight(1)
-            .margin({ left: 10 })
-            .backgroundColor(this.isDark ? this.theme.accentDark : this.theme.accent)
-            .fontColor(Color.White)
-            .onClick((): void => {
+            }
+          })
+          Toggle({ type: ToggleType.Button, isOn: false }) {
+            Text($r('app.string.common_confirm'))
+              .fontSize(UiTokens.fsBody)
+              .fontColor(Color.White)
+          }
+          .layoutWeight(1)
+          .height(46)
+          .margin({ left: 10 })
+          .padding(0)
+          .backgroundColor(this.isDark ? this.theme.accentDark : this.theme.accent)
+          .selectedColor(Color.Transparent)
+          .systemMaterial(this.switcherMaterial)
+          .onChange((isOn: boolean): void => {
+            if (isOn) {
               this.submitModal();
-            })
+            }
+          })
         }
         .width('100%')
         .margin({ top: 16 })
@@ -436,27 +687,21 @@ export struct ConnectPanel {
     });
   }
 
-  // 会话操作：pin/unpin → PUT /chats/{id}；archive → POST /chats/{id}/archive；delete → DELETE /chats/{id}
+  // 会话操作（置顶 / 归档 / 删除）统一走 services/ChatsService（与会话详情页菜单同一实现）
   private async chatOp(c: ChatInfo, kind: string): Promise<void> {
     if (this.conn === null) {
       return;
     }
     const conn: QpConnection = this.conn;
-    const base: string = `${conn.baseUrl}/api/chats/${encodeURIComponent(c.id)}`;
     try {
       if (kind === 'pin' || kind === 'unpin') {
-        const body: ChatPinBody = { pinned: kind === 'pin' };
-        await doRequest(base, http.RequestMethod.PUT, JSON.stringify(body),
-          conn.token.length > 0 ? conn.token : null, conn.agentId);
+        await pinChat(conn.baseUrl, conn.token, conn.agentId, c.id, kind === 'pin');
       } else if (kind === 'archive') {
-        await doRequest(`${base}/archive`, http.RequestMethod.POST, null,
-          conn.token.length > 0 ? conn.token : null, conn.agentId);
+        await setChatArchived(conn.baseUrl, conn.token, conn.agentId, c.id, true);
       } else if (kind === 'unarchive') {
-        await doRequest(`${base}/unarchive`, http.RequestMethod.POST, null,
-          conn.token.length > 0 ? conn.token : null, conn.agentId);
+        await setChatArchived(conn.baseUrl, conn.token, conn.agentId, c.id, false);
       } else {
-        await doRequest(base, http.RequestMethod.DELETE, null,
-          conn.token.length > 0 ? conn.token : null, conn.agentId);
+        await deleteChat(conn.baseUrl, conn.token, conn.agentId, c.id);
       }
       await this.loadChats(conn);
     } catch (e) {
@@ -532,23 +777,23 @@ export struct ConnectPanel {
         .fontWeight(FontWeight.Bold)
         .margin({ top: 4, bottom: UiTokens.titleGap })
 
-      // 状态卡（只读信息块，无点击动作 → 与工作台连接状态卡同款玻璃块，不加按压反馈）
-      Row() {
-        Circle()
-          .width(10)
-          .height(10)
-          .fill(this.statusColor)
-          .margin({ right: 8 })
-        Text(this.statusText)
-          .fontSize(14)
-          .fontColor(this.statusColor)
-          .layoutWeight(1)
-      }
-      .width('100%')
-      .padding(UiTokens.cardPad)
-      .borderRadius(UiTokens.cardRadius)
-      .backgroundColor($r('app.color.card_glass'))
-      .margin({ top: UiTokens.cardVGap, bottom: UiTokens.cardVGap })
+      // 工作区徽章（对齐 7378 features/workspaces/WorkspaceSwitcher.tsx 的 WorkspaceBadge）：
+      // 工作区名 + 智能体名 · 运行状态 + 下拉箭头 → 切换面板（切换连接 / 左滑取消配对）
+      WorkspaceBadge({
+        statusText: this.statusText,
+        agentName: this.currentAgentName(),
+        reloadToken: this.wsToken,
+        onSwitched: (): void => {
+          this.reloadAfterSwitch();
+        },
+        onAdd: (): void => {
+          // 再配对一只 → 扫码配对页（对齐 7378 的「再配对一只」直达配对页）
+          this.openScan();
+        }
+      })
+        .margin({ top: UiTokens.cardVGap, bottom: UiTokens.cardVGap })
+
+      // 搜索会话已迁到标题栏工具条（SearchPill）——与智能体/工作台同一形态（沉浸光感 + 随 tab 切换滑动）
 
       // 审批 Inbox 卡（对齐 RN：有待审批时高亮，点开半模态列表）；弹层挂在外层 Column（bindSheet 只能挂内置组件）
       Column() {
@@ -583,7 +828,6 @@ export struct ConnectPanel {
 
       if (this.connected) {
         Column() {
-          this.connectedCard()
           this.chatList()
         }
         .width('100%')
@@ -697,146 +941,93 @@ export struct ConnectPanel {
   }
 
   @Builder
-  connectedCard() {
-    Column() {
-      Row() {
-        Text(this.connHost)
-          .fontSize(15)
-          .fontWeight(FontWeight.Medium)
-          .layoutWeight(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.connMode)
-          .fontSize(11)
-          .fontColor($r('app.color.status_success'))
-          .backgroundColor($r('app.color.success_bg'))
-          .borderRadius(8)
-          .padding({ left: 8, right: 8, top: 2, bottom: 2 })
-      }
-      .width('100%')
-
-      if (this.connUser.length > 0) {
-        Text(`${this.t($r('app.string.cp_user'))}：${this.connUser}`)
-          .fontSize(13)
-          .fontColor($r('app.color.text_secondary'))
-          .margin({ top: 6 })
-      }
-
-      if (this.agentNames.length > 0) {
-        Text(`${this.t($r('app.string.cp_agents'))}（${this.agentNames.length}）`)
-          .fontSize(13)
-          .fontColor($r('app.color.text_secondary'))
-          .margin({ top: 10 })
-        Text(this.agentNames.join('、'))
-          .fontSize(14)
-          .margin({ top: 4 })
-          .wordBreak(WordBreak.BREAK_ALL)
-      }
-
-      Row() {
-        Button($r('app.string.cp_reconnect'))
-          .layoutWeight(1)
-          .height(42)
-          // 玻璃底（内容区材质不生效，官方 FAQ 范围规则）
-          .backgroundColor($r('app.color.card_glass'))
-          .fontColor($r('app.color.btn_gray_text'))
-          .enabled(!this.connecting)
-          .margin({ right: 8 })
-          .scale({ x: this.pressedBtn === 2 ? PRESS_SCALE : 1, y: this.pressedBtn === 2 ? PRESS_SCALE : 1 })
-          .stateEffect(false)
-          .visualEffect(pressEffect(this.pressedBtn === 2))
-          .onTouch((e: TouchEvent): void => {
-            this.onBtnTouch(2, e);
-          })
-          .onClick(() => {
-            this.doConnect();
-          })
-        Button($r('app.string.cp_disconnect'))
-          .layoutWeight(1)
-          .height(42)
-          // 半透明玻璃底（内容区材质不生效，故显式给底色）；红色语义由 fontColor（status_error）承载
-          .backgroundColor($r('app.color.card_glass'))
-          .fontColor($r('app.color.status_error'))
-          .enabled(!this.connecting)
-          .margin({ left: 8 })
-          .scale({ x: this.pressedBtn === 3 ? PRESS_SCALE : 1, y: this.pressedBtn === 3 ? PRESS_SCALE : 1 })
-          .stateEffect(false)
-          .visualEffect(pressEffect(this.pressedBtn === 3))
-          .onTouch((e: TouchEvent): void => {
-            this.onBtnTouch(3, e);
-          })
-          .onClick(() => {
-            this.doDisconnect();
-          })
-      }
-      .width('100%')
-      .margin({ top: 16 })
-    }
-    .width('100%')
-    .padding(16)
-    .borderRadius(UiTokens.cardRadius)
-    .backgroundColor($r('app.color.card_bg'))
-    .margin({ top: UiTokens.cardVGap })
-  }
-
-  @Builder
   chatList() {
-    if (this.chatsLoading && this.chats.length === 0) {
-      Text($r('app.string.cp_chats_loading'))
-        .fontSize(UiTokens.fsSecondary)
+    Column() {
+      Text($r('app.string.cp_chats_title'))
+        .fontSize(UiTokens.fsCaption)
         .fontColor($r('app.color.text_tertiary'))
-        .margin({ top: UiTokens.cardVGap })
-    } else if (this.chats.length === 0) {
-      Text($r('app.string.cp_chats_empty'))
-        .fontSize(UiTokens.fsSecondary)
-        .fontColor($r('app.color.text_tertiary'))
-        .margin({ top: UiTokens.cardVGap })
-    } else {
-      Column() {
-        Text($r('app.string.cp_chats_title'))
-          .fontSize(UiTokens.fsCaption)
-          .fontColor($r('app.color.text_tertiary'))
-          .margin({ top: UiTokens.titleGap, bottom: 2 })
-        Row() {
-          Text($r('app.string.chats_tab_active'))
-            .fontSize(UiTokens.fsSecondary)
-            .fontWeight(this.showArchived ? FontWeight.Normal : FontWeight.Bold)
-            .fontColor(this.showArchived ? $r('app.color.text_tertiary') : $r('app.color.text_secondary'))
+        .margin({ top: UiTokens.titleGap, bottom: 4 })
+      Row() {
+        // 视图切换常驻：此前它只渲染在「有会话」分支里 → 归档为空时切进「已归档」后
+        // 连切换条一起消失，没有任何按钮能切回来（已修）
+        this.archivedSwitcher()
+        Blank()
+        if (!this.showArchived) {
+          Text($r('app.string.chats_group_new'))
+            .fontSize(UiTokens.fsCaption)
+            .fontColor(this.isDark ? this.theme.accentDark : this.theme.accent)
             .onClick((): void => {
-              if (this.showArchived) {
-                this.toggleArchived();
-              }
+              this.openGroupEditor('');
             })
-          Text($r('app.string.chats_tab_archived'))
-            .fontSize(UiTokens.fsSecondary)
-            .fontWeight(this.showArchived ? FontWeight.Bold : FontWeight.Normal)
-            .fontColor(this.showArchived ? $r('app.color.text_secondary') : $r('app.color.text_tertiary'))
-            .margin({ left: 16 })
-            .onClick((): void => {
-              if (!this.showArchived) {
-                this.toggleArchived();
-              }
-            })
-          Blank()
-          if (!this.showArchived) {
-            Text($r('app.string.chats_group_new'))
-              .fontSize(UiTokens.fsCaption)
-              .fontColor(this.isDark ? this.theme.accentDark : this.theme.accent)
-              .onClick((): void => {
-                this.openGroupEditor('');
-              })
+          // 新建会话（对齐 7378 chats.tsx 页头的主色「＋」）：主色胶囊
+          Row({ space: 3 }) {
+            Image($r('app.media.plus'))
+              .width(13).height(13)
+              .fillColor(Color.White)
+            Text($r('app.string.chats_new'))
+              .fontSize(UiTokens.fsChip)
+              .fontColor(Color.White)
           }
+          .height(28)
+          .padding({ left: 10, right: 10 })
+          .borderRadius(14)
+          .backgroundColor(this.isDark ? this.theme.accentDark : this.theme.accent)
+          .margin({ left: 10 })
+          .onClick((): void => {
+            this.doCreateChat();
+          })
+        }
+      }
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+      .margin({ bottom: 2 })
+
+      // 首帧取列表：先出转圈占位（对齐 console 列表加载态），取回后再整段淡入，
+      // 避免空列表直接"刷"出一整队卡片
+      if (this.chatsLoading && this.chats.length === 0) {
+        Row() {
+          LoadingProgress()
+            .width(28)
+            .height(28)
+            .color(this.isDark ? this.theme.accentDark : this.theme.accent)
         }
         .width('100%')
-        .alignItems(VerticalAlign.Center)
-        .margin({ top: UiTokens.titleGap, bottom: 2 })
-
-        ForEach(buildChatSections(this.chats, this.groups), (sec: ChatSection) => {
+        .justifyContent(FlexAlign.Center)
+        .padding({ top: 48, bottom: 48 })
+      } else if (this.chats.length === 0) {
+        // 归档视图的空态与在阅视图区分（对齐 7378：空归档不是"没有会话"）
+        Text(this.showArchived
+          ? $r('app.string.chats_archived_empty') : $r('app.string.cp_chats_empty'))
+          .fontSize(UiTokens.fsSecondary)
+          .fontColor($r('app.color.text_tertiary'))
+          .margin({ top: UiTokens.cardVGap })
+      } else {
+        ForEach(buildChatSections(this.visibleChats(), this.groups,
+          (c: ChatInfo): string => this.activityOf(c)), (sec: ChatSection) => {
           this.sectionBlock(sec)
-        }, (sec: ChatSection) => sec.key)
+        }, (sec: ChatSection) => this.sectionKeyOf(sec))
       }
-      .width('100%')
-      .padding({ bottom: 32 })
     }
+    .width('100%')
+    .padding({ bottom: 32 })
+  }
+
+  // 会话 / 已归档：连排按钮（共用组件 components/SegmentedControl.ets —— 一个框 + 跟手滑块 +
+  // 沉浸材质 + 点击/拖动两入口，几何取小号：170×26vp）
+  @Builder
+  archivedSwitcher() {
+    Row() {
+      SegmentedControl({
+        labels: [$r('app.string.chats_tab_active'), $r('app.string.chats_tab_archived')],
+        selectedIndex: this.showArchived ? 1 : 0,
+        segHeight: SWITCH_H,
+        material: this.switcherMaterial,
+        onChange: (index: number): void => {
+          this.setArchived(index === 1);
+        }
+      })
+    }
+    .width(SWITCH_W)
   }
 
   // 单个分区（对齐 RN chats.tsx SectionList：header + 会话行）
@@ -845,8 +1036,10 @@ export struct ConnectPanel {
     Column() {
       Row() {
         if (sec.pinned) {
-          Text('📌')
-            .fontSize(UiTokens.fsChip)
+          // 置顶标记用系统符号（对齐 7378 chats.tsx 的 lucide Pin；符号名取自 SDK id_defined.json）
+          SymbolGlyph($r('sys.symbol.pin_fill'))
+            .fontSize(UiTokens.fsCaption)
+            .fontColor([this.isDark ? this.theme.accentDark : this.theme.accent])
             .margin({ right: 4 })
         }
         Text(sec.title)
@@ -875,7 +1068,7 @@ export struct ConnectPanel {
           .height(32)
           .padding(0)
           .backgroundColor(Color.Transparent)
-          .bindMenu(this.groupMenuOf(sec.group))
+          .bindMenu(this.groupMenuOf(sec.group), menuOptions())
         }
       }
       .width('100%')
@@ -885,15 +1078,21 @@ export struct ConnectPanel {
       ForEach(sec.chats, (c: ChatInfo) => {
         ChatRow({
           chat: c,
+          accent: this.isDark ? this.theme.accentDark : this.theme.accent,
+          activity: this.activityOf(c),
+          avatarText: this.agentInitial(),
           menu: this.chatMenuOf(c),
           onOpen: (): void => {
-            const param: ChatRouteParam = { chatId: c.id, chatName: c.name, sessionId: c.sessionId };
-            this.navStack.pushPath({ name: 'chat', param: param });
+            this.openChat(c);
           }
         })
-      }, (c: ChatInfo) => c.id)
+      }, (c: ChatInfo) => this.chatKeyOf(c))
     }
     .width('100%')
+    // 展开动画由 listRevealed 驱动（见 revealList）：取数完成前整段透明且下移，
+    // 到位后补间到完全不透明、回到原位 —— 首帧不再"一次刷出一队卡片"
+    .opacity(this.listRevealed ? 1 : 0)
+    .translate({ y: this.listRevealed ? 0 : 18 })
   }
 
   private async doConnect(): Promise<void> {
@@ -920,19 +1119,12 @@ export struct ConnectPanel {
       this.statusText = this.t($r('app.string.cp_status_connecting'));
       this.statusColor = $r('app.color.status_warning');
 
-      const outcome = await connectToQwenPaw(rawUrl, rawTicket);
       const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-      await saveConnection(ctx, outcome.connection);
-
-      this.connected = true;
-      this.connHost = hostOf(outcome.connection.baseUrl);
-      this.connUser = outcome.connection.username;
-      this.connMode = outcome.openMode ? this.t($r('app.string.cp_mode_open')) : this.t($r('app.string.cp_mode_paired'));
-      this.agentNames = outcome.agentNames;
-      this.statusText = `${this.t($r('app.string.cp_status_connected'))} · ${outcome.agentCount}${this.t($r('app.string.cp_agents_unit'))}`;
-      this.statusColor = $r('app.color.status_success');
-      emitter.emit(CONN_CHANGE_EVENT);
-      this.loadChats(outcome.connection);
+      const stored: QpConnection | null = await loadConnection(ctx);
+      const keepAgent: string = (stored !== null && sameBaseUrl(stored.baseUrl, rawUrl))
+        ? stored.agentId : '';
+      const outcome = await connectToQwenPaw(rawUrl, rawTicket, keepAgent);
+      this.applyOutcome(outcome);
     } catch (e) {
       const err: Error = e as Error;
       this.connected = false;
@@ -949,57 +1141,152 @@ export struct ConnectPanel {
     clearConnection(ctx).then(() => {
       this.connected = false;
       this.connUser = '';
-      this.connMode = '';
       this.agentNames = [];
+      this.agentIds = [];
       this.chats = [];
+      this.query = '';
       this.statusText = this.t($r('app.string.cp_status_disconnected'));
       this.statusColor = $r('app.color.status_idle');
       emitter.emit(CONN_CHANGE_EVENT);
     });
   }
 
-  private doScan(): void {
-    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const atManager: abilityAccessCtrl.AtManager = abilityAccessCtrl.createAtManager();
-    const permissions: Permissions[] = ['ohos.permission.CAMERA'];
-    atManager.requestPermissionsFromUser(ctx, permissions).then((result) => {
-      const granted: boolean = result.authResults.every((r: number) => r === 0);
-      if (!granted) {
-        this.errorMsg = this.t($r('app.string.cp_err_no_camera'));
-        return;
+  // 新建会话（对齐 7378 chats.tsx create()）：POST /chats → 列表前置 → 直接进详情页
+  private async doCreateChat(): Promise<void> {
+    const conn: QpConnection | null = this.conn;
+    if (conn === null || this.creating) {
+      return;
+    }
+    this.creating = true;
+    try {
+      const chat: ChatInfo = await createChat(conn.baseUrl, conn.token, conn.agentId, 'New Chat');
+      const next: ChatInfo[] = [chat];
+      for (const c of this.chats) {
+        next.push(c);
       }
-      this.startScan();
-    }).catch(() => {
-      this.errorMsg = this.t($r('app.string.cp_err_no_camera'));
-    });
+      this.chats = next;
+      this.syncActivity();
+      this.openChat(chat);
+    } catch (e) {
+      this.getUIContext().getPromptAction().showToast({
+        message: this.t($r('app.string.chats_create_failed'))
+      });
+    } finally {
+      this.creating = false;
+    }
   }
 
-  private startScan(): void {
-    scanBarcode.startScan({
-      scanTypes: [scanCore.ScanType.QR_CODE],
-      enableMultiMode: true
-    }).then((result: scanBarcode.ScanResult) => {
-      try {
-        const pairing = parsePairingUri(result.originalValue);
-        this.baseUrlInput = pairing.baseUrl;
-        this.ticketInput = pairing.ticket;
-        this.errorMsg = '';
-        this.doConnect();
-      } catch (e) {
-        this.errorMsg = `${this.t($r('app.string.cp_err_scan_invalid'))}：${String((e as Error).message)}`;
+  private openChat(chat: ChatInfo): void {
+    this.markRead(chat);
+    const param: ChatRouteParam = {
+      chatId: chat.id, chatName: chat.name, sessionId: chat.sessionId, userId: chat.userId
+    };
+    this.rememberLastChat(chat);
+    this.navStack.pushPath({ name: 'chat', param: param });
+  }
+
+  // 记忆「最后打开的会话」（按连接 + 智能体）：四项都要存 —— sessionId 用于发送/重连定位，
+  // userId 是该会话自己的归属，缺任一项都会挂到别的 chat 或推空流。
+  private rememberLastChat(chat: ChatInfo): void {
+    const conn: QpConnection | null = this.conn;
+    if (conn === null) {
+      return;
+    }
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const rec: LastChat = {
+      chatId: chat.id, chatName: chat.name, sessionId: chat.sessionId, userId: chat.userId
+    };
+    saveLastChat(ctx, conn.baseUrl, conn.agentId, rec);
+  }
+
+  // 从别的页签切回「会话」页时恢复上次打开的会话（不在启动时自动打开）：仅当本页没有已打开的
+  // 会话时才做，且只在会话仍属于当前智能体时才打开；已被删/换过智能体则静默清掉记忆，不弹错。
+  private async maybeReopenLastChat(): Promise<void> {
+    const conn: QpConnection | null = this.conn;
+    if (conn === null || this.chats.length === 0) {
+      return;
+    }
+    // 分栏右栏的占位页不算"打开了会话"：栈里只有它时照常恢复上次的会话
+    const names: string[] = this.navStack.getAllPathName();
+    const chatOpen: boolean = names.length > 0
+      && !(names.length === 1 && names[0] === CHAT_PLACEHOLDER_ROUTE);
+    if (chatOpen) {
+      return;
+    }
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const rec: LastChat | null = await loadLastChat(ctx, conn.baseUrl, conn.agentId);
+    if (rec === null) {
+      return;
+    }
+    for (const c of this.chats) {
+      if (c.id === rec.chatId) {
+        this.openChat(c);
+        return;
       }
-    }).catch(() => {
-      this.errorMsg = this.t($r('app.string.cp_err_scan_cancel'));
-    });
+    }
+    await clearLastChat(ctx, conn.baseUrl, conn.agentId);
+  }
+
+  // 搜索过滤（对齐 7378：按名称不区分大小写包含）
+  private visibleChats(): ChatInfo[] {
+    const q: string = this.query.trim().toLowerCase();
+    if (q.length === 0) {
+      return this.chats;
+    }
+    const out: ChatInfo[] = [];
+    for (const c of this.chats) {
+      if (c.name.toLowerCase().indexOf(q) >= 0) {
+        out.push(c);
+      }
+    }
+    return out;
+  }
+
+  private doScan(): void {
+    this.openScan();
   }
 }
 
 // 会话行卡（点按 = 打开会话详情）：卡片壳统一走 GlassCard
 @Component
 export struct ChatRow {
-  chat: ChatInfo = { id: '', sessionId: '', name: '', updatedAtMs: 0, pinned: false, groupId: '' };
+  @Prop chat: ChatInfo = {
+    id: '', sessionId: '', userId: '', name: '', updatedAtMs: 0, pinned: false,
+    groupId: '', status: '', createdAtMs: 0
+  };
+  // 主题强调色（置顶图标用）；自定义组件入参须用 @Prop 才会随父组件主题变化同步
+  @Prop accent: ResourceColor = '#000000';
+  // 运行状态灯（对齐 7378 chats.tsx 的 ActivityDot）：running=服务端 chat.status==='running'
+  @Prop activity: string = 'idle';
+  // 头像首字（对齐 7378 卡片的 48vp AgentAvatar；本工程取当前智能体名首字，底色用主题色）
+  @Prop avatarText: string = '';
+  // 运行中呼吸脉冲的驱动位（对齐 7378 ActivityDot 的 withRepeat(pulse, -1, true)）
+  @State pulseOn: boolean = false;
   menu: MenuElement[] = [];
   onOpen: () => void = (): void => {};
+
+  // 三色口径同 7378：running 蓝、unread 绿、其它中性灰
+  private activityColor(): ResourceColor {
+    if (this.activity === 'running') {
+      return '#2F80ED';
+    }
+    if (this.activity === 'unread') {
+      return '#34C759';
+    }
+    return '#A9A5A1';
+  }
+
+  aboutToAppear(): void {
+    if (this.activity !== 'running') {
+      return;
+    }
+    // 无限循环呼吸（官方 animateTo：iterations -1 + PlayMode.Alternate，对应 7378 的 withRepeat(-1, true)）
+    this.getUIContext().animateTo({
+      duration: 900, curve: Curve.EaseInOut, iterations: -1, playMode: PlayMode.Alternate
+    }, (): void => {
+      this.pulseOn = true;
+    });
+  }
 
   build() {
     GlassCard({
@@ -1010,6 +1297,39 @@ export struct ChatRow {
       }
     }) {
       Row() {
+      // 头像 + 右下角运行状态灯（对齐 7378 chats.tsx 的 avatarWrap：48vp AgentAvatar + ActivityDot）
+      Stack({ alignContent: Alignment.BottomEnd }) {
+        Stack() {
+          Circle()
+            .fill(this.accent)
+            .width(48)
+            .height(48)
+          Text(this.avatarText)
+            .fontSize(18)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(Color.White)
+        }
+        .width(48)
+        .height(48)
+        // 呼吸脉冲层（只 running 有）：同一枚圆放大到 1.8 并随放大淡出，叠在实心灯之下
+        if (this.activity === 'running') {
+          Circle()
+            .fill(this.activityColor())
+            .width(12)
+            .height(12)
+            .margin({ right: 1, bottom: 1 })
+            .scale({ x: this.pulseOn ? 1.8 : 1, y: this.pulseOn ? 1.8 : 1 })
+            .opacity(this.pulseOn ? 0.26 : 0.7)
+        }
+        Circle()
+          .fill(this.activityColor())
+          .width(12)
+          .height(12)
+          .margin({ right: 1, bottom: 1 })
+      }
+      .width(52)
+      .height(52)
+      .margin({ right: 10 })
       Text(this.chat.name)
         .fontSize(UiTokens.fsBody)
         .fontWeight(FontWeight.Medium)
@@ -1017,12 +1337,10 @@ export struct ChatRow {
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
       if (this.chat.pinned) {
-        Text($r('app.string.cp_chat_pinned'))
-          .fontSize(UiTokens.fsChip)
-          .fontColor($r('app.color.text_secondary'))
-          .backgroundColor($r('app.color.card_bg'))
-          .borderRadius(UiTokens.chipRadius)
-          .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+        // 卡片置顶标记 = 图标（对齐 7378：Pin 主题色实心、约 12vp），不再是文字胶囊 / emoji
+        SymbolGlyph($r('sys.symbol.pin_fill'))
+          .fontSize(UiTokens.fsCaption)
+          .fontColor([this.accent])
           .margin({ right: 8 })
       }
         Text(relativeTime(this.chat.updatedAtMs))
@@ -1039,7 +1357,7 @@ export struct ChatRow {
         .padding(0)
         .backgroundColor(Color.Transparent)
         .margin({ left: 4 })
-        .bindMenu(this.menu)
+        .bindMenu(this.menu, menuOptions())
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)
@@ -1069,7 +1387,51 @@ function groupTitleOf(g: ChatGroup): ResourceStr {
   return g.name;
 }
 
-function buildChatSections(chats: ChatInfo[], groups: ChatGroup[]): ChatSection[] {
+
+
+interface IndexedChat {
+  chat: ChatInfo;
+  index: number;
+}
+
+// 对齐 7378 features/chats/grouping.ts：running 优先、其次 unread，再按更新时间倒序
+// （并列保持原序）。没有这层排序时，正在跑的会话会被埋在列表里，看不出运行状态。
+function activityPriority(activity: string): number {
+  if (activity === 'running') {
+    return 0;
+  }
+  if (activity === 'unread') {
+    return 1;
+  }
+  return 2;
+}
+
+function sortChatsByAttention(list: ChatInfo[], activityOf: (c: ChatInfo) => string): ChatInfo[] {
+  const indexed: IndexedChat[] = list.map((c: ChatInfo, i: number): IndexedChat => {
+    const item: IndexedChat = { chat: c, index: i };
+    return item;
+  });
+  indexed.sort((left: IndexedChat, right: IndexedChat): number => {
+    const byActivity: number = activityPriority(activityOf(left.chat))
+      - activityPriority(activityOf(right.chat));
+    if (byActivity !== 0) {
+      return byActivity;
+    }
+    const byRecency: number = right.chat.updatedAtMs - left.chat.updatedAtMs;
+    return byRecency !== 0 ? byRecency : left.index - right.index;
+  });
+  return indexed.map((item: IndexedChat): ChatInfo => item.chat);
+}
+
+// 地址是否同一目标（末尾斜杠与大小写不敏感）——决定自动重连是否沿用已选智能体
+function sameBaseUrl(a: string, b: string): boolean {
+  const na: string = a.trim().replace(/\/+$/, '').toLowerCase();
+  const nb: string = b.trim().replace(/\/+$/, '').toLowerCase();
+  return na.length > 0 && na === nb;
+}
+
+function buildChatSections(chats: ChatInfo[], groups: ChatGroup[],
+  activityOf: (c: ChatInfo) => string): ChatSection[] {
   const pinned: ChatInfo[] = chats.filter((c: ChatInfo): boolean => c.pinned);
   const remaining: ChatInfo[] = chats.filter((c: ChatInfo): boolean => !c.pinned);
   const sections: ChatSection[] = [];
@@ -1087,8 +1449,9 @@ function buildChatSections(chats: ChatInfo[], groups: ChatGroup[]): ChatSection[
     if (g.kind === 'default') {
       hasDefault = true;
     }
-    const data: ChatInfo[] = remaining.filter((c: ChatInfo): boolean =>
-      g.kind === 'default' ? (c.groupId.length === 0 || c.groupId === g.id) : c.groupId === g.id);
+    const data: ChatInfo[] = sortChatsByAttention(remaining.filter((c: ChatInfo): boolean =>
+      g.kind === 'default' ? (c.groupId.length === 0 || c.groupId === g.id) : c.groupId === g.id),
+      activityOf);
     sections.push({ key: g.id, title: groupTitleOf(g), chats: data, pinned: false, group: g });
   }
   const ungrouped: ChatInfo[] = remaining.filter((c: ChatInfo): boolean =>
@@ -1096,7 +1459,7 @@ function buildChatSections(chats: ChatInfo[], groups: ChatGroup[]): ChatSection[
   if (ungrouped.length > 0 || !hasDefault) {
     sections.push({
       key: 'ungrouped', title: $r('app.string.chats_group_ungrouped'),
-      chats: ungrouped, pinned: false, group: null
+      chats: sortChatsByAttention(ungrouped, activityOf), pinned: false, group: null
     });
   }
   return sections;

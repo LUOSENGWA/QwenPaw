@@ -1,9 +1,9 @@
 {
   "routerMap": [
     {
-      "name": "settings",
-      "pageSourceFile": "src/main/ets/pages/SettingsPage.ets",
-      "buildFunction": "SettingsPageBuilder"
+      "name": "chat-placeholder",
+      "pageSourceFile": "src/main/ets/pages/ChatPlaceholderPage.ets",
+      "buildFunction": "ChatPlaceholderPageBuilder"
     },
     {
       "name": "chat",
@@ -19,6 +19,46 @@
       "name": "workbench-category",
       "pageSourceFile": "src/main/ets/pages/CategoryPage.ets",
       "buildFunction": "CategoryPageBuilder"
+    },
+    {
+      "name": "pawapp",
+      "pageSourceFile": "src/main/ets/pages/PawAppPage.ets",
+      "buildFunction": "PawAppPageBuilder"
+    },
+    {
+      "name": "notifications",
+      "pageSourceFile": "src/main/ets/pages/NotificationsPage.ets",
+      "buildFunction": "NotificationsPageBuilder"
+    },
+    {
+      "name": "scan",
+      "pageSourceFile": "src/main/ets/pages/ScanPage.ets",
+      "buildFunction": "ScanPageBuilder"
+    },
+    {
+      "name": "community-article",
+      "pageSourceFile": "src/main/ets/pages/CommunityArticlePage.ets",
+      "buildFunction": "CommunityArticlePageBuilder"
+    },
+    {
+      "name": "community-compose",
+      "pageSourceFile": "src/main/ets/pages/CommunityComposePage.ets",
+      "buildFunction": "CommunityComposePageBuilder"
+    },
+    {
+      "name": "platform-login",
+      "pageSourceFile": "src/main/ets/pages/PlatformLoginPage.ets",
+      "buildFunction": "PlatformLoginPageBuilder"
+    },
+    {
+      "name": "platform-deploy",
+      "pageSourceFile": "src/main/ets/pages/PlatformDeployPage.ets",
+      "buildFunction": "PlatformDeployPageBuilder"
+    },
+    {
+      "name": "platform-oauth",
+      "pageSourceFile": "src/main/ets/pages/PlatformOAuthPage.ets",
+      "buildFunction": "PlatformOAuthPageBuilder"
     }
   ]
 }

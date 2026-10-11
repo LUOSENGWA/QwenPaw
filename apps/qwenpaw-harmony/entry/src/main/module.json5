@@ -5,27 +5,29 @@
     "description": "$string:module_desc",
     "mainElement": "EntryAbility",
     "deviceTypes": [
-      "phone"
+      "phone",
+      "tablet",
+      "2in1"
     ],
     "deliveryWithInstall": true,
     "installationFree": false,
     "pages": "$profile:main_pages",
     "routerMap": "$profile:router_map",
+    // 权限口径（逐项按官方文档与 SDK d.ts 核对，只声明真正需要的）：
+    //   · INTERNET —— 唯一声明的权限（http 请求与 ArkWeb 都靠它；normal 级，安装即授予）。
+    //   · 相机 —— 不声明。扫码走 Scan Kit「默认界面扫码」startScanForResult，官方口径：
+    //       「Scan Kit 默认界面扫码对系统相机权限进行了预授权且调用期间处于安全访问状态，
+    //        无需开发者再次申请相机权限」（开发指南/Scan_Kit_统一扫码服务/默认界面扫码）。
+    //       仅「自定义界面扫码」(customScan，自绘取景) 才需要 CAMERA。
+    //   · 通知 —— 不声明。@ohos.notificationManager 的 publish / requestEnableNotification
+    //       在 SDK d.ts 中均无 @permission 标注；发布前用 requestEnableNotification 请求用户授权
+    //       （首次弹窗，之后直接返回；用户关掉系统开关时发布不生效）——见 services/NotifyService.ets。
+    //   · 文件 —— 用系统 picker（DocumentViewPicker，独立进程授予 URI），不需要 READ/WRITE_MEDIA。
+    //   · 剪贴板写入（复制消息）、分享（Share Kit）、打开外部链接（Want.viewData）均无需权限声明。
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET"
-      },
-      {
-        "name": "ohos.permission.CAMERA",
-        "reason": "$string:camera_reason",
-        "usedScene": {
-          "abilities": [
-            "EntryAbility"
-          ],
-          "when": "inuse"
-        }
       }
-      // ohos.permission.PUBLISH_NOTIFICATION 为系统基本权限（安装自动授予），无需声明
     ],
     "metadata": [
       {

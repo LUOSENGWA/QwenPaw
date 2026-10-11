@@ -5,6 +5,7 @@
 import { runCodecSelfTest, SelfTestResult } from '../services/CodecSelfTest';
 import { RELAY_PROTOCOL_VERSION, CONTRACT_VERSION, RELAY_OPERATIONS } from '../services/RelayCodec';
 import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
+import { requestNotifications } from '../services/AppEvents';
 
 @Component
 export struct MinePage {
@@ -32,9 +33,30 @@ export struct MinePage {
       .backgroundColor($r('app.color.card_bg'))
       .margin({ left: 16, right: 16 })
 
+      // 通知设置入口（对齐 7378 的通知偏好页；本组件挂在设置页内）
+      Row() {
+        Text($r('app.string.notify_title'))
+          .fontSize(15)
+          .fontColor($r('app.color.text_primary_strong'))
+          .layoutWeight(1)
+        Image($r('app.media.chevron_right'))
+          .width(16).height(16)
+          .fillColor($r('app.color.text_tertiary'))
+      }
+      .width('100%')
+      .padding(16)
+      .borderRadius(16)
+      .backgroundColor($r('app.color.card_bg'))
+      .margin({ top: 12, left: 16, right: 16 })
+      .onClick((): void => {
+        requestNotifications();
+      })
+
       Button($r('app.string.mine_run'))
         .margin({ top: 20, left: 16, right: 16 })
         // 玻璃底（内容区材质不生效，官方 FAQ 范围规则）+ 自绘按压弹性/点光源
+        // Button 文案默认白色（系统按默认蓝底设计），换浅色玻璃底后必须显式给字色，否则白字白底看不见
+        .fontColor($r('app.color.text_primary_strong'))
         .backgroundColor($r('app.color.card_glass'))
         .scale({ x: this.pressed ? PRESS_SCALE : 1, y: this.pressed ? PRESS_SCALE : 1 })
         .stateEffect(false)

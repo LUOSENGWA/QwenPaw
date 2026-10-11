@@ -65,7 +65,7 @@ export struct ModuleSkillPool {
     body: string | null): Promise<http.HttpResponse> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
-      throw new Error('未连接');
+      throw new Error(this.t($r('app.string.wb_not_connected')));
     }
     return doRequest(`${c.baseUrl}/api${path}`, method, body,
       c.token.length > 0 ? c.token : null, c.agentId);
@@ -295,7 +295,7 @@ export struct ModuleSkillPool {
       } else {
         IosGroup({ title: `Skill Pool · ${this.skills.length}` }) {
           IosRow({
-            icon: $r('sys.symbol.doc_plaintext_and_pencil'),
+            icon: $r('app.media.file_pen'),
             label: this.t($r('app.string.module_pool_new')),
             tappable: !this.busy,
             onPress: (): void => {
@@ -303,7 +303,7 @@ export struct ModuleSkillPool {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.arrow_up_to_line'),
+            icon: $r('app.media.arrow_up_to_line'),
             label: this.t($r('app.string.module_pool_import')),
             subtitle: this.t($r('app.string.module_pool_import_hint')),
             tappable: !this.busy,
@@ -312,7 +312,7 @@ export struct ModuleSkillPool {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.arrow_clockwise'),
+            icon: $r('app.media.refresh_cw'),
             label: this.t($r('app.string.module_pool_refresh')),
             tappable: !this.busy,
             onPress: (): void => {
@@ -321,7 +321,7 @@ export struct ModuleSkillPool {
           })
           ForEach(this.skills, (s: PoolSkill) => {
             IosRow({
-              icon: $r('sys.symbol.list_book'),
+              icon: $r('app.media.book_open'),
               label: s.name,
               subtitle: s.description.length > 0 ? s.description
                 : (s.source.length > 0 ? s.source : this.t($r('app.string.module_pool_shared'))),
@@ -333,7 +333,7 @@ export struct ModuleSkillPool {
           }, (s: PoolSkill) => s.name)
         }
         if (this.skills.length === 0) {
-          ModuleEmpty($r('sys.symbol.list_book'),
+          ModuleEmpty($r('app.media.book_open'),
             this.t($r('app.string.module_pool_empty_title')),
             this.t($r('app.string.module_pool_empty_subtitle')))
         }

@@ -71,7 +71,7 @@ export struct ModuleModels {
     body: string | null): Promise<http.HttpResponse> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
-      throw new Error('未连接');
+      throw new Error(this.t($r('app.string.wb_not_connected')));
     }
     return doRequest(`${c.baseUrl}/api${path}`, method, body,
       c.token.length > 0 ? c.token : null, c.agentId);
@@ -229,19 +229,19 @@ export struct ModuleModels {
       } else {
         IosGroup({ title: this.t($r('app.string.module_models_group_active')) }) {
           IosRow({
-            icon: $r('sys.symbol.bolt'),
+            icon: $r('app.media.zap'),
             label: this.t($r('app.string.module_models_active_provider')),
             trailing: this.activeOk ? this.activeField('provider_id')
               : this.t($r('app.string.module_models_na'))
           })
           IosRow({
-            icon: $r('sys.symbol.archivebox'),
+            icon: $r('app.media.archive'),
             label: this.t($r('app.string.module_models_active_model')),
             trailing: this.activeOk ? this.activeField('model')
               : this.t($r('app.string.module_models_na'))
           })
           IosRow({
-            icon: $r('sys.symbol.arrow_left_arrow_right'),
+            icon: $r('app.media.arrow_left_right'),
             label: this.t($r('app.string.module_models_max_input')),
             trailing: this.activeOk ? this.maxInput() : this.t($r('app.string.module_models_na'))
           })
@@ -249,7 +249,7 @@ export struct ModuleModels {
         IosGroup({ title: `${this.t($r('app.string.module_models_group_providers'))} · ${this.providers.length}` }) {
           ForEach(this.providers, (row: ProviderRow) => {
             IosRow({
-              icon: $r('sys.symbol.cloud'),
+              icon: $r('app.media.cloud'),
               label: row.name,
               subtitle: this.subtitleOf(row),
               hasSwitch: true,
@@ -263,7 +263,7 @@ export struct ModuleModels {
         }
         IosGroup({ title: `${this.t($r('app.string.module_models_group_local'))} · ${this.localModels.length}` }) {
           IosRow({
-            icon: $r('sys.symbol.desktop'),
+            icon: $r('app.media.monitor'),
             label: this.t($r('app.string.module_models_local_server')),
             subtitle: this.lmOk ? this.serverField('message')
               : this.t($r('app.string.module_models_unsupported')),
@@ -271,14 +271,14 @@ export struct ModuleModels {
           })
           ForEach(this.localModels, (row: LocalModelRow) => {
             IosRow({
-              icon: $r('sys.symbol.archivebox'),
+              icon: $r('app.media.archive'),
               label: row.name,
               subtitle: row.releasedAt
             })
           }, (row: LocalModelRow) => row.id)
         }
         if (this.providersOk && this.providers.length === 0) {
-          ModuleEmpty($r('sys.symbol.cloud'),
+          ModuleEmpty($r('app.media.cloud'),
             this.t($r('app.string.module_models_empty_title')),
             this.t($r('app.string.module_models_empty_subtitle')))
         }

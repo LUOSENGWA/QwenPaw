@@ -28,9 +28,9 @@ export function ModuleLoading(label: string) {
 @Builder
 export function ModuleError(message: string, onRetry: () => void) {
   Row() {
-    SymbolGlyph($r('sys.symbol.exclamationmark_circle'))
-      .fontSize(22)
-      .fontColor([$r('app.color.status_error')])
+    Image($r('app.media.circle_alert'))
+      .width(22).height(22)
+      .fillColor($r('app.color.status_error'))
       .margin({ right: 10 })
     Column() {
       Text($r('app.string.module_error_title'))
@@ -46,9 +46,9 @@ export function ModuleError(message: string, onRetry: () => void) {
     }
     .alignItems(HorizontalAlign.Start)
     .layoutWeight(1)
-    SymbolGlyph($r('sys.symbol.arrow_clockwise'))
-      .fontSize(20)
-      .fontColor([$r('app.color.status_error')])
+    Image($r('app.media.refresh_cw'))
+      .width(20).height(20)
+      .fillColor($r('app.color.status_error'))
       .padding(6)
       .onClick((): void => {
         onRetry();
@@ -62,11 +62,17 @@ export function ModuleError(message: string, onRetry: () => void) {
 }
 
 @Builder
-export function ModuleEmpty(icon: Resource, title: string, subtitle: string) {
+export function ModuleEmpty(icon: Resource, title: string, subtitle: string, asSymbol: boolean = false) {
   Column() {
-    SymbolGlyph(icon)
-      .fontSize(28)
-      .fontColor([$r('app.color.text_tertiary')])
+    if (asSymbol) {
+      SymbolGlyph(icon)
+        .fontSize(28)
+        .fontColor([$r('app.color.text_tertiary')])
+    } else {
+      Image(icon)
+        .width(28).height(28)
+        .fillColor($r('app.color.text_tertiary'))
+    }
     Text(title)
       .fontSize(UiTokens.fsBody)
       .fontWeight(FontWeight.Medium)

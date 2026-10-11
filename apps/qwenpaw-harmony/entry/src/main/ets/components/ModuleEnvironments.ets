@@ -59,7 +59,7 @@ export struct ModuleEnvironments {
     body: string | null): Promise<http.HttpResponse> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
-      throw new Error('未连接');
+      throw new Error(this.t($r('app.string.wb_not_connected')));
     }
     return doRequest(`${c.baseUrl}/api${path}`, method, body,
       c.token.length > 0 ? c.token : null, c.agentId);
@@ -211,7 +211,7 @@ export struct ModuleEnvironments {
       } else {
         IosGroup({ title: `${this.t($r('app.string.module_env_group'))} · ${this.envs.length}` }) {
           IosRow({
-            icon: $r('sys.symbol.doc_plaintext_and_pencil'),
+            icon: $r('app.media.file_pen'),
             label: this.t($r('app.string.module_env_add')),
             subtitle: this.t($r('app.string.module_env_add_hint')),
             tappable: !this.busy,
@@ -221,7 +221,7 @@ export struct ModuleEnvironments {
           })
           ForEach(this.envs, (e: EnvVar) => {
             IosRow({
-              icon: $r('sys.symbol.checkmark_shield'),
+              icon: $r('app.media.shield_check'),
               label: e.key,
               subtitle: this.t($r('app.string.module_env_hidden')),
               tappable: !this.busy,
@@ -232,7 +232,7 @@ export struct ModuleEnvironments {
           }, (e: EnvVar) => e.key)
         }
         if (this.envs.length === 0) {
-          ModuleEmpty($r('sys.symbol.checkmark_shield'),
+          ModuleEmpty($r('app.media.shield_check'),
             this.t($r('app.string.module_env_empty_title')),
             this.t($r('app.string.module_env_empty_subtitle')))
         }

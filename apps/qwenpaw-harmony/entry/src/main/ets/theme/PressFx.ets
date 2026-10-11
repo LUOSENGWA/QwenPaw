@@ -26,12 +26,22 @@ export class PressLatch {
   downAt: number = 0;
 }
 
-// 按压视效：按下时自身发出明亮光源照亮相邻受光卡片；常态受光（被邻居按压的光源点亮）
-export function pressEffect(pressed: boolean): VisualEffect {
+// 按压视效：按下时自身发出明亮光源照亮相邻受光卡片。
+//
+// 受光类型按卡片高度分两档（官方《点光源效果》：光源位于**组件正中心**，照亮范围有限）：
+//   - 短卡（会话/智能体的 GlassCard）：默认受光 DEFAULT_FEATHERING_BORDER 即可整圈照亮（实测按下时
+//     卡外背景 12→42，约 35px 羽化外溢）；
+//   - 高卡（社区帖卡 ~360vp）：中心到上下边缘 ~180vp，超出默认羽化范围 → 边缘照亮整块失效
+//     （实测卡外背景仍为 12，与静止一致）。改用受光类型 BORDER（沿组件边界直接发光，不受中心距离限制）
+//     让整圈边界都亮起来。
+// 注：不要用 options 光参里的 height 去"够到"高卡边缘 —— 实测那会在卡的右下角炸出一块纯白（255）光斑。
+export function pressEffect(pressed: boolean, borderLight: boolean = false): VisualEffect {
   return new hdsEffect.HdsEffectBuilder()
     .pointLight({
       sourceType: pressed ? hdsEffect.PointLightSourceType.BRIGHT : hdsEffect.PointLightSourceType.NONE,
-      illuminatedType: hdsEffect.PointLightIlluminatedType.DEFAULT_FEATHERING_BORDER
+      illuminatedType: borderLight
+        ? hdsEffect.PointLightIlluminatedType.BORDER
+        : hdsEffect.PointLightIlluminatedType.DEFAULT_FEATHERING_BORDER
     })
     .buildEffect();
 }

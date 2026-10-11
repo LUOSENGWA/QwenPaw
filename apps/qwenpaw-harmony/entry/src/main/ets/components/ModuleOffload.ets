@@ -97,10 +97,9 @@ export struct ModuleOffload {
       }
     }) {
       Row() {
-        SymbolGlyph(icon)
-          .fontSize(20)
-          .fontColor([$r('app.color.text_secondary')])
-          .width(34)
+        Image(icon)
+          .width(20).height(20)
+          .fillColor($r('app.color.text_secondary'))
           .margin({ right: 8 })
         Column() {
           Text(titleRes)
@@ -142,9 +141,9 @@ export struct ModuleOffload {
           .fontColor($r('app.color.text_tertiary'))
           .width('100%')
           .margin({ bottom: 6 })
-        this.optionRow($r('sys.symbol.bolt'), $r('app.string.module_offload_keep'),
+        this.optionRow($r('app.media.zap'), $r('app.string.module_offload_keep'),
           $r('app.string.module_offload_keep_hint'), 'keep_foreground')
-        this.optionRow($r('sys.symbol.archivebox'),
+        this.optionRow($r('app.media.archive'),
           $r('app.string.module_offload_bg'), $r('app.string.module_offload_bg_hint'), 'offload')
         Text($r('app.string.module_offload_footer'))
           .fontSize(UiTokens.fsCaption)

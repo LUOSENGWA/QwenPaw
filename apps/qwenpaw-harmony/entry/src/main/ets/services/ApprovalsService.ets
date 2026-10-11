@@ -8,6 +8,7 @@
 
 import { http } from '@kit.NetworkKit';
 import { doRequest, jsonOf, ConnectError } from './ConnectionService';
+import { t, tf } from './I18n';
 
 export interface ApprovalInfo {
   requestId: string;
@@ -58,10 +59,10 @@ export async function fetchApprovals(baseUrl: string, token: string, agentId: st
     `${baseUrl}/api/console/push-messages`, http.RequestMethod.GET, null,
     token.length > 0 ? token : null, agentId);
   if (resp.responseCode === 401 || resp.responseCode === 403) {
-    throw new ConnectError(`票据已失效（HTTP ${resp.responseCode}），请回到「会话」页重新连接。`);
+    throw new ConnectError(tf($r('app.string.err_token_expired_chats'), resp.responseCode));
   }
   if (resp.responseCode !== 200) {
-    throw new ConnectError(`读取审批列表失败（HTTP ${resp.responseCode}）。`);
+    throw new ConnectError(tf($r('app.string.err_load_approvals'), resp.responseCode));
   }
   const data: Record<string, Object> = jsonOf(resp);
   const arr: Object = data['pending_approvals'];
@@ -79,7 +80,7 @@ export async function fetchApprovals(baseUrl: string, token: string, agentId: st
       requestId: strOf(a, 'request_id'),
       rootSessionId: strOf(a, 'root_session_id'),
       agentId: strOf(a, 'agent_id'),
-      toolName: name.length > 0 ? name : '工具调用',
+      toolName: name.length > 0 ? name : t($r('app.string.approvals_tool_call')),
       toolSource: strOf(a, 'tool_source'),
       severity: strOf(a, 'severity'),
       findingsCount: numOf(a, 'findings_count'),
@@ -124,7 +125,7 @@ export async function approveRequest(baseUrl: string, token: string, agentId: st
   const resp: http.HttpResponse = await doRequest(`${baseUrl}/api/approval/approve`,
     http.RequestMethod.POST, JSON.stringify(body), token.length > 0 ? token : null, agentId);
   if (resp.responseCode < 200 || resp.responseCode >= 300) {
-    throw new ConnectError(`批准失败（HTTP ${resp.responseCode}）。`);
+    throw new ConnectError(tf($r('app.string.err_approve_failed'), resp.responseCode));
   }
 }
 
@@ -140,6 +141,6 @@ export async function denyRequest(baseUrl: string, token: string, agentId: strin
   const resp: http.HttpResponse = await doRequest(`${baseUrl}/api/approval/deny`,
     http.RequestMethod.POST, JSON.stringify(body), token.length > 0 ? token : null, agentId);
   if (resp.responseCode < 200 || resp.responseCode >= 300) {
-    throw new ConnectError(`拒绝失败（HTTP ${resp.responseCode}）。`);
+    throw new ConnectError(tf($r('app.string.err_deny_failed'), resp.responseCode));
   }
 }

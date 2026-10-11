@@ -48,7 +48,7 @@ function isSensitiveKey(key: string): boolean {
 @Component
 export struct ModuleSnapshot {
   endpoint: string = '';
-  icon: Resource = $r('sys.symbol.doc_text');
+  icon: Resource = $r('app.media.file_text');
   @State items: SnapItem[] = [];
   @State loaded: boolean = false;
   @State error: string = '';
@@ -217,7 +217,7 @@ export struct ModuleSnapshot {
         }
         IosGroup({ title: this.t($r('app.string.module_snap_status')) }) {
           IosRow({
-            icon: $r('sys.symbol.checkmark'),
+            icon: $r('app.media.check'),
             label: this.t($r('app.string.module_snap_synced')),
             trailing: this.conn !== null ? this.conn.agentId : ''
           })

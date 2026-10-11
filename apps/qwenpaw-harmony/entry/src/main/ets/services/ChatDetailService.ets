@@ -16,6 +16,7 @@ import { http } from '@kit.NetworkKit';
 import { util } from '@kit.ArkTS';
 import { doRequest, jsonOf, ConnectError } from './ConnectionService';
 import { SseParser, SseEvent, StreamDelta, StreamEventClassifier, streamError, messageKindOf, isToolType } from './SseParser';
+import { t, tf } from './I18n';
 
 // 会话详情关闭事件：会话列表据此重载
 export const CHAT_CLOSED_EVENT: string = 'qp_chat_closed';
@@ -45,15 +46,25 @@ export interface DisplayMessage {
 export interface DisplayTurn {
   id: string;
   user: DisplayMessage | null;
-  process: DisplayMessage[];
-  answer: DisplayMessage | null;
-  resultMedia: DisplayPart[];
+  // 服务端到达顺序的响应段（reasoning / tool / message 各占一段）：呈现层按 console 的 block 规则
+  // （pages/Chat/messageDisplay.ts groupResponseMessages）分组 —— 生成中逐段可见、结束后只留最后
+  // 一段文本；此处不预切 process/answer，避免丢掉段与段之间的先后顺序。
+  responses: DisplayMessage[];
   pending: boolean;
+}
+
+// 响应分组块：message = 可见的气泡段，steps = 收起来的过程组（思考 / 工具）
+export interface ResponseBlock {
+  kind: string;
+  messages: DisplayMessage[];
 }
 
 export interface ChatSnapshot {
   turns: DisplayTurn[];
   running: boolean;
+  // 该会话归属的 user_id（缺省 'default' = 服务端/console 的默认身份）：
+  // 服务端按 (session_id, user_id) 定位 chat，发/重连都必须带它
+  userId: string;
 }
 
 // ============ 常量（对齐 PR #7378 messages.ts）============
@@ -110,7 +121,10 @@ function toDisplayMessage(message: Record<string, Object>, index: number): Displ
   if (parts.length === 0 && kind !== 'tool') {
     return null;
   }
-  const id: string = strOf(message, 'id').length > 0 ? strOf(message, 'id') : `${role}-${index}`;
+  // 身份改用「内容派生」（role + 序号 + 文本/媒体指纹）：服务端每次读都重发全新的消息 id
+  //（实测同一会话连取两次，263 条 id 全变），若拿它当身份，3s 轮询会把整列表判定为"全变了"
+  // → 列表反复重建 + 滚动跳动。
+  const id: string = stableMessageId(role, index, parts);
   const out: DisplayMessage = { id: id, role: role, kind: kind, parts: parts };
   if (tool !== null) {
     out.toolName = tool.name;
@@ -120,6 +134,20 @@ function toDisplayMessage(message: Record<string, Object>, index: number): Displ
     out.toolOutput = tool.output;
   }
   return out;
+}
+
+// 消息稳定标识：同内容必得同 id（服务端 id 不稳定，不能当身份）
+function stableMessageId(role: string, index: number, parts: DisplayPart[]): string {
+  let text: string = '';
+  let media: string = '';
+  for (const p of parts) {
+    if (p.type === 'text') {
+      text += p.text !== undefined ? p.text : '';
+    } else {
+      media += `${p.type}:${p.url !== undefined ? p.url : ''};`;
+    }
+  }
+  return `${role}-${index}-${text.length}-${media.length}-${text.substring(0, 24)}`;
 }
 
 // ============ content → display parts（对齐 PR #7378 contentParts / contentItemParts）============
@@ -203,7 +231,7 @@ function mediaPart(type: string, rawUrl: Object, item: Record<string, Object>): 
     nameV = item['name'];
   }
   const name: string = (typeof nameV === 'string' && nameV) ? nameV as string : fileName(url);
-  const part: DisplayPart = { type: type, url: url, name: name.length > 0 ? name : '文件' };
+  const part: DisplayPart = { type: type, url: url, name: name.length > 0 ? name : t($r('app.string.common_file')) };
   return [part];
 }
 
@@ -368,7 +396,7 @@ function mediaPartsFromText(value: string): DisplayPart[] {
 
 function pathMediaPart(url: string): DisplayPart {
   const name: string = fileName(url);
-  const base: string = name.length > 0 ? name : '文件';
+  const base: string = name.length > 0 ? name : t($r('app.string.common_file'));
   const dot: number = base.lastIndexOf('.');
   const ext: string = dot >= 0 ? base.substring(dot + 1).toLowerCase() : '';
   let type: string = 'file';
@@ -495,41 +523,6 @@ function buildTurn(messages: DisplayMessage[]): DisplayTurn {
       responses.push(m);
     }
   }
-  let answerIndex: number = -1;
-  for (let i = responses.length - 1; i >= 0; i--) {
-    const m: DisplayMessage = responses[i];
-    if (m.role === 'assistant' && m.kind === 'message'
-      && (m.parts.length > 0 || m.error !== undefined)) {
-      answerIndex = i;
-      break;
-    }
-  }
-  const answer: DisplayMessage | null = answerIndex >= 0 ? responses[answerIndex] : null;
-  const process: DisplayMessage[] = [];
-  for (let i = 0; i < responses.length; i++) {
-    if (i !== answerIndex) {
-      process.push(responses[i]);
-    }
-  }
-  const answerKeys: string[] = [];
-  if (answer !== null) {
-    for (const p of answer.parts) {
-      if (p.type !== 'text') {
-        answerKeys.push(mediaKey(p));
-      }
-    }
-  }
-  const allMedia: DisplayPart[] = [];
-  for (const m of process) {
-    for (const p of m.parts) {
-      if (p.type !== 'text') {
-        allMedia.push(p);
-      }
-    }
-  }
-  const resultMedia: DisplayPart[] = uniqueMedia(allMedia).filter(
-    (p: DisplayPart): boolean => answerKeys.indexOf(mediaKey(p)) < 0
-  );
   let pending: boolean = false;
   for (const m of messages) {
     if (m.pending === true) {
@@ -539,11 +532,98 @@ function buildTurn(messages: DisplayMessage[]): DisplayTurn {
   return {
     id: user !== null ? user.id : messages[0].id,
     user: user,
-    process: process,
-    answer: answer,
-    resultMedia: resultMedia,
+    responses: responses,
     pending: pending
   };
+}
+
+// 末段助理文本（console 'result-only' 与 7378 buildTurn 同一判定：最后一个有内容的 assistant message）
+export function answerIndexOf(responses: DisplayMessage[]): number {
+  for (let i = responses.length - 1; i >= 0; i--) {
+    const m: DisplayMessage = responses[i];
+    if (m.role === 'assistant' && m.kind === 'message'
+      && (m.parts.length > 0 || m.error !== undefined)) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+// 工具产出媒体（排除可见答案自身的媒体；对齐 7378 buildTurn 的 resultMedia）
+export function resultMediaOf(responses: DisplayMessage[], answerIndex: number): DisplayPart[] {
+  const answerKeys: string[] = [];
+  if (answerIndex >= 0) {
+    for (const p of responses[answerIndex].parts) {
+      if (p.type !== 'text') {
+        answerKeys.push(mediaKey(p));
+      }
+    }
+  }
+  const allMedia: DisplayPart[] = [];
+  for (let i = 0; i < responses.length; i++) {
+    if (i === answerIndex) {
+      continue;
+    }
+    for (const p of responses[i].parts) {
+      if (p.type !== 'text') {
+        allMedia.push(p);
+      }
+    }
+  }
+  return uniqueMedia(allMedia).filter(
+    (p: DisplayPart): boolean => answerKeys.indexOf(mediaKey(p)) < 0
+  );
+}
+
+// 响应分段（逐条对齐 console pages/Chat/messageDisplay.ts groupResponseMessages）：
+//   生成中（created / in_progress）= 'text-only'：message 段逐段可见，其间的思考 / 工具按原位收进 steps 组；
+//   已结束 = 'result-only'（默认偏好 result-collapsed）：只留最后一段 message 可见，其余全部收进 steps 组。
+export function responseBlocks(responses: DisplayMessage[], pending: boolean): ResponseBlock[] {
+  const lastMessageIndex: number = pending ? -1 : answerIndexOf(responses);
+  const blocks: ResponseBlock[] = [];
+  let run: DisplayMessage[] = [];
+  const flush = (): void => {
+    if (run.length > 0) {
+      blocks.push({ kind: 'steps', messages: run });
+      run = [];
+    }
+  };
+  for (let i = 0; i < responses.length; i++) {
+    const m: DisplayMessage = responses[i];
+    const visible: boolean = pending
+      ? (m.role === 'assistant' && m.kind === 'message')
+      : (i === lastMessageIndex);
+    if (visible) {
+      flush();
+      blocks.push({ kind: 'message', messages: [m] });
+    } else {
+      run.push(m);
+    }
+  }
+  flush();
+  return blocks;
+}
+
+// 分片数组里的文本拼接（气泡 / 过程行取展示文本用；多段 text 之间以空格相连）
+export function textOfParts(parts: DisplayPart[]): string {
+  let out: string = '';
+  for (const p of parts) {
+    if (p.type === 'text' && p.text !== undefined) {
+      out = out.length > 0 ? `${out} ${p.text}` : p.text;
+    }
+  }
+  return out;
+}
+
+// 分片数组里的文本总长（历史摘要 / 过程行内容指纹用）
+export function partsTextLen(parts: DisplayPart[]): number {
+  let n: number = 0;
+  for (const p of parts) {
+    if (p.type === 'text' && p.text !== undefined) {
+      n += p.text.length;
+    }
+  }
+  return n;
 }
 
 function mediaKey(part: DisplayPart): string {
@@ -573,10 +653,10 @@ export async function fetchChatMessages(baseUrl: string, token: string, agentId:
     `${baseUrl}/api/chats/${encodeURIComponent(chatId)}`, http.RequestMethod.GET, null,
     token.length > 0 ? token : null, agentId);
   if (resp.responseCode === 401 || resp.responseCode === 403) {
-    throw new ConnectError(`票据已失效（HTTP ${resp.responseCode}），请重新连接。`);
+    throw new ConnectError(tf($r('app.string.err_token_expired'), resp.responseCode));
   }
   if (resp.responseCode !== 200) {
-    throw new ConnectError(`读取会话失败（HTTP ${resp.responseCode}）。`);
+    throw new ConnectError(tf($r('app.string.err_load_chat'), resp.responseCode));
   }
   const data: Record<string, Object> = jsonOf(resp);
   const arr: Object = data['messages'];
@@ -584,7 +664,11 @@ export async function fetchChatMessages(baseUrl: string, token: string, agentId:
   if (Array.isArray(arr)) {
     display = toDisplayMessages(arr as Object[]);
   }
-  return { turns: toDisplayTurns(display), running: strOf(data, 'status') === 'running' };
+  return {
+    turns: toDisplayTurns(display),
+    running: strOf(data, 'status') === 'running',
+    userId: strOf(data, 'user_id')
+  };
 }
 
 // ============ 流式对话（对齐 PR #7378 client.ts streamChat；传输 = http.requestInStream）============
@@ -605,8 +689,44 @@ class ChatStream implements ChatStreamHandle {
 }
 
 export function streamChat(baseUrl: string, token: string, agentId: string, sessionId: string,
-  parts: ChatInputPart[], onDelta: (delta: StreamDelta) => void,
+  parts: ChatInputPart[], approvalLevel: string, userId: string,
+  onDelta: (delta: StreamDelta) => void,
   onDone: (error: string | null) => void): ChatStreamHandle {
+  const message: ChatInputMessage = { role: 'user', content: parts };
+  // 身份口径：用会话自己的 user_id，缺省回落服务端默认身份 'default'
+  // （console 的 DEFAULT_USER_ID = "default"；此前抄 7378 的 'mobile' 是 RN 应用自己的身份，
+  //   对 console 建的会话不成立 → 服务端按 (session_id,user_id) 定位到别的 chat → 空流）
+  const uid: string = userId.length > 0 ? userId : 'default';
+  const payload: ChatStreamRequest = {
+    input: [message],
+    session_id: sessionId,
+    user_id: uid,
+    channel: 'console',
+    stream: true
+  };
+  if (approvalLevel.length > 0) {
+    const rc: StreamRequestContext = { approval_level: approvalLevel };
+    payload.request_context = rc;
+  }
+  return openChatStream(baseUrl, token, agentId, payload, onDelta, onDone);
+}
+
+// 重连进行中的服务端会话（对齐 7378 client.reconnectChat：POST /console/chat {reconnect:true, session_id}）
+export function reconnectChat(baseUrl: string, token: string, agentId: string, sessionId: string,
+  userId: string,
+  onDelta: (delta: StreamDelta) => void, onDone: (error: string | null) => void): ChatStreamHandle {
+  const payload: ReconnectChatRequest = {
+    reconnect: true,
+    session_id: sessionId,
+    user_id: userId.length > 0 ? userId : 'default',
+    channel: 'console'
+  };
+  return openChatStream(baseUrl, token, agentId, payload, onDelta, onDone);
+}
+
+// SSE 流传输与解析（发送 / 重连共用）：payload 由调用方按各自口径构造
+function openChatStream(baseUrl: string, token: string, agentId: string, payload: Object,
+  onDelta: (delta: StreamDelta) => void, onDone: (error: string | null) => void): ChatStreamHandle {
   const req: http.HttpRequest = http.createHttp();
   const parser: SseParser = new SseParser();
   const classifier: StreamEventClassifier = new StreamEventClassifier();
@@ -647,14 +767,6 @@ export function streamChat(baseUrl: string, token: string, agentId: string, sess
   if (agentId.length > 0) {
     header['X-Agent-Id'] = agentId;
   }
-  const message: ChatInputMessage = { role: 'user', content: parts };
-  const payload: ChatStreamRequest = {
-    input: [message],
-    session_id: sessionId,
-    user_id: 'mobile',
-    channel: 'console',
-    stream: true
-  };
   const options: http.HttpRequestOptions = {
     method: http.RequestMethod.POST,
     header: header,
@@ -696,7 +808,7 @@ export async function stopChat(baseUrl: string, token: string, agentId: string,
     `${baseUrl}/api/console/chat/stop?chat_id=${encodeURIComponent(chatId)}`,
     http.RequestMethod.POST, null, token.length > 0 ? token : null, agentId);
   if (resp.responseCode < 200 || resp.responseCode >= 300) {
-    throw new ConnectError(`停止失败（HTTP ${resp.responseCode}）。`);
+    throw new ConnectError(tf($r('app.string.err_stop_failed'), resp.responseCode));
   }
 }
 
@@ -737,14 +849,14 @@ export async function uploadAttachment(baseUrl: string, token: string, agentId: 
   try {
     const resp: http.HttpResponse = await req.request(`${baseUrl}/api/console/upload`, options);
     if (resp.responseCode < 200 || resp.responseCode >= 300) {
-      throw new ConnectError(`附件上传失败（HTTP ${resp.responseCode}）。`);
+      throw new ConnectError(tf($r('app.string.err_upload_failed'), resp.responseCode));
     }
     const data: Record<string, Object> = JSON.parse(resp.result as string) as Record<string, Object>;
     const url: string = strOf(data, 'url');
     const name: string = strOf(data, 'file_name');
     const size: Object = data['size'];
     if (url.length === 0) {
-      throw new ConnectError('附件上传失败：服务端未返回文件地址。');
+      throw new ConnectError(t($r('app.string.err_upload_no_url')));
     }
     const out: UploadResult = {
       url: url,
@@ -762,6 +874,9 @@ export interface ChatRouteParam {
   chatId: string;
   chatName: string;
   sessionId: string;
+  // 会话自己的 user_id（列表项带过来）：详情接口不返回它，丢了就只能回落 'default'，
+  // 而 app 自建会话归属 'mobile' → 回落会挂到另一条同 session_id 的 chat 上空跑
+  userId: string;
 }
 
 export interface ChatInputPart {
@@ -779,12 +894,26 @@ interface ChatInputMessage {
   content: ChatInputPart[];
 }
 
+// 随发送下发的运行上下文（对齐 7378 api/client.ts：request_context.approval_level）
+interface StreamRequestContext {
+  approval_level: string;
+}
+
 interface ChatStreamRequest {
   input: ChatInputMessage[];
   session_id: string;
   user_id: string;
   channel: string;
   stream: boolean;
+  request_context?: StreamRequestContext;
+}
+
+// 重连进行中的会话（对齐 7378 client.reconnectChat 的请求体）
+interface ReconnectChatRequest {
+  reconnect: boolean;
+  session_id: string;
+  user_id: string;
+  channel: string;
 }
 
 interface DecodeStreamOptions {

@@ -20,6 +20,7 @@ import { IosGroup, IosRow } from './IosList';
 import { ModuleEmpty, ModuleError, ModuleFooter, ModuleLoading } from './ModuleStates';
 import { SheetGate, moduleSheetOptions } from './SheetGate';
 import { FieldDef, FieldSheet, fieldDef } from './FieldSheet';
+import { menuOptions } from '../theme/MenuMaterial';
 
 function recOf(value: Object): Record<string, Object> {
   if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) {
@@ -33,12 +34,15 @@ function strOf(value: Object, fallback: string): string {
 }
 
 // 渠道显示名（对齐 7378 channelLabel）
+const CHANNEL_NAME_RES: Record<string, Resource> = {
+  'dingtalk': $r('app.string.channel_dingtalk'),
+  'feishu': $r('app.string.channel_feishu'),
+  'wechat': $r('app.string.channel_wechat'),
+  'wecom': $r('app.string.channel_wecom')
+};
+
 const CHANNEL_NAMES: Record<string, string> = {
   'console': 'Console',
-  'dingtalk': '钉钉',
-  'feishu': '飞书',
-  'wechat': '微信',
-  'wecom': '企业微信',
   'telegram': 'Telegram',
   'discord': 'Discord',
   'slack': 'Slack',
@@ -281,6 +285,11 @@ export struct ModuleChannels {
   }
 
   private channelLabel(key: string): string {
+    // 中文名（钉钉/飞书/微信/企业微信）走资源，其余为品牌原名直出
+    const res: Resource | undefined = CHANNEL_NAME_RES[key];
+    if (res !== undefined) {
+      return this.t(res);
+    }
     const name: Object = CHANNEL_NAMES[key];
     return typeof name === 'string' ? name as string : key;
   }
@@ -619,7 +628,7 @@ export struct ModuleChannels {
         if (this.aclSupported) {
           IosGroup({ title: this.t($r('app.string.module_ch_access_group')) }) {
             IosRow({
-              icon: $r('sys.symbol.plus'),
+              icon: $r('app.media.plus'),
               label: this.t($r('app.string.module_ch_add_rule')),
               subtitle: this.t($r('app.string.module_ch_add_rule_hint')),
               tappable: true,
@@ -629,7 +638,7 @@ export struct ModuleChannels {
               }
             })
             IosRow({
-              icon: $r('sys.symbol.checkmark_shield'),
+              icon: $r('app.media.shield_check'),
               label: this.t($r('app.string.module_ch_pending')),
               subtitle: this.t($r('app.string.module_ch_pending_hint')),
               trailing: `${this.pending.length + this.mailPending.length}`,
@@ -643,7 +652,7 @@ export struct ModuleChannels {
               ForEach(this.pending, (p: PendingEntry) => {
                 Column() {
                   IosRow({
-                    icon: $r('sys.symbol.person'),
+                    icon: $r('app.media.user'),
                     label: p.remark.length > 0 ? p.remark
                       : (p.username.length > 0 ? p.username : p.userId),
                     subtitle: p.firstMessage.length > 0 ? `${p.channel} · ${p.firstMessage}` : p.channel,
@@ -652,7 +661,7 @@ export struct ModuleChannels {
                   })
                 }
                 .width('100%')
-                .bindMenu(this.pendingMenu(p))
+                .bindMenu(this.pendingMenu(p), menuOptions())
               }, (p: PendingEntry) => `${p.channel}:${p.userId}`)
             }
           }
@@ -663,7 +672,7 @@ export struct ModuleChannels {
               ForEach(this.mailPending, (m: MailPending) => {
                 Column() {
                   IosRow({
-                    icon: $r('sys.symbol.envelope'),
+                    icon: $r('app.media.mail'),
                     label: m.displayName.length > 0 ? m.displayName : m.address,
                     subtitle: m.subject.length > 0 ? `${m.agentId} · ${m.subject}` : m.agentId,
                     trailing: this.t($r('app.string.module_ch_handle')),
@@ -671,7 +680,7 @@ export struct ModuleChannels {
                   })
                 }
                 .width('100%')
-                .bindMenu(this.mailMenu(m))
+                .bindMenu(this.mailMenu(m), menuOptions())
               }, (m: MailPending) => `${m.agentId}:${m.address}`)
             }
           }
@@ -682,8 +691,8 @@ export struct ModuleChannels {
                   Column() {
                     IosRow({
                       icon: u.allowed
-                        ? $r('sys.symbol.person_badge_checkmark')
-                        : $r('sys.symbol.person_xmark'),
+                        ? $r('app.media.user_check')
+                        : $r('app.media.user_x'),
                       label: u.remark.length > 0 ? u.remark
                         : (u.username.length > 0 ? u.username : u.userId),
                       subtitle: u.userId,
@@ -693,7 +702,7 @@ export struct ModuleChannels {
                     })
                   }
                   .width('100%')
-                  .bindMenu(this.ruleMenu(u))
+                  .bindMenu(this.ruleMenu(u), menuOptions())
                 }, (u: AclUser) => `${u.channel}:${u.allowed ? 'a' : 'd'}:${u.userId}`)
               }
             }
@@ -704,7 +713,7 @@ export struct ModuleChannels {
           IosGroup({ title: this.t($r('app.string.module_ch_channels_group')) }) {
             ForEach(this.channels, (info: ChannelInfo) => {
               IosRow({
-                icon: $r('sys.symbol.radio'),
+                icon: $r('app.media.radio'),
                 label: this.channelLabel(info.key),
                 subtitle: info.enabled ? this.t($r('app.string.module_ch_connected'))
                   : this.t($r('app.string.module_ch_disabled')),
@@ -724,7 +733,7 @@ export struct ModuleChannels {
           }
           ModuleFooter(this.t($r('app.string.module_ch_footer')))
         } else {
-          ModuleEmpty($r('sys.symbol.radio'),
+          ModuleEmpty($r('app.media.radio'),
             this.t($r('app.string.module_ch_empty_title')),
             this.t($r('app.string.module_ch_empty_copy')))
         }

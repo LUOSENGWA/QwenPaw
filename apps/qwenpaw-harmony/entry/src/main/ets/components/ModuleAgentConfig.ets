@@ -541,6 +541,7 @@ export struct ModuleAgentConfig {
     return this.t($r('app.string.module_agent_think_inherit'));
   }
 
+  // 语言名按各自语言书写（endonym，如「中文」「English」），不随界面语言翻译
   private languageLabel(value: string): string {
     if (value === 'zh') {
       return '中文';
@@ -646,7 +647,7 @@ export struct ModuleAgentConfig {
       } else {
         IosGroup({ title: this.t($r('app.string.module_agent_identity')) }) {
           IosRow({
-            icon: $r('sys.symbol.person'),
+            icon: $r('app.media.user'),
             label: this.name,
             subtitle: this.description.length > 0 ? this.description
               : this.t($r('app.string.module_agent_no_desc')),
@@ -657,7 +658,7 @@ export struct ModuleAgentConfig {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.square_and_pencil'),
+            icon: $r('app.media.square_pen'),
             label: this.t($r('app.string.module_agent_edit')),
             tappable: true,
             onPress: (): void => {
@@ -667,7 +668,7 @@ export struct ModuleAgentConfig {
         }
         IosGroup({ title: this.t($r('app.string.module_agent_defaults')) }) {
           IosRow({
-            icon: $r('sys.symbol.gauge_with_dots_needle_33percent'),
+            icon: $r('app.media.gauge'),
             label: this.t($r('app.string.module_agent_approval')),
             subtitle: this.t($r('app.string.module_agent_approval_hint')),
             trailing: this.approvalLabel(this.approvalLevel),
@@ -677,7 +678,7 @@ export struct ModuleAgentConfig {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.lightbulb'),
+            icon: $r('app.media.lightbulb'),
             label: this.t($r('app.string.module_agent_thinking')),
             subtitle: this.t($r('app.string.module_agent_thinking_hint')),
             trailing: this.thinkingLabel(this.thinkingLevel),
@@ -689,7 +690,7 @@ export struct ModuleAgentConfig {
         }
         IosGroup({ title: this.t($r('app.string.module_agent_memory')) }) {
           IosRow({
-            icon: $r('sys.symbol.arrow_2_circlepath'),
+            icon: $r('app.media.refresh_cw'),
             label: this.t($r('app.string.module_agent_reindex')),
             subtitle: this.t($r('app.string.module_agent_reindex_hint')),
             tappable: true,
@@ -701,7 +702,7 @@ export struct ModuleAgentConfig {
         if (this.hasRunning) {
           IosGroup({ title: this.t($r('app.string.module_agent_g_runtime')) }) {
             IosRow({
-              icon: $r('sys.symbol.bolt'),
+              icon: $r('app.media.zap'),
               label: this.t($r('app.string.module_agent_loop')),
               subtitle: this.fill(this.t($r('app.string.module_agent_loop_hint')),
                 `${numOf(this.iteration()['max_iterations'], numOf(this.running['max_iters'], 0))}`)
@@ -712,7 +713,7 @@ export struct ModuleAgentConfig {
               }
             })
             IosRow({
-              icon: $r('sys.symbol.doc_text'),
+              icon: $r('app.media.file_text'),
               label: this.t($r('app.string.module_agent_shell')),
               subtitle: this.fill(this.t($r('app.string.module_agent_shell_hint')),
                 `${numOf(this.running['shell_command_timeout'], 0)}`)
@@ -725,7 +726,7 @@ export struct ModuleAgentConfig {
           }
           IosGroup({ title: this.t($r('app.string.module_agent_g_memory_view')) }) {
             IosRow({
-              icon: $r('sys.symbol.list_book'),
+              icon: $r('app.media.book_open'),
               label: this.t($r('app.string.module_agent_mem_row')),
               subtitle: this.fill(this.t($r('app.string.module_agent_mem_hint')),
                 `${numOf(this.memory()['auto_memory_interval'], 0)}`)
@@ -738,7 +739,7 @@ export struct ModuleAgentConfig {
           }
           IosGroup({ title: this.t($r('app.string.module_agent_g_locale')) }) {
             IosRow({
-              icon: $r('sys.symbol.translate'),
+              icon: $r('app.media.languages'),
               label: this.languageLabel(this.language),
               subtitle: this.t($r('app.string.module_agent_lang_hint')),
               trailing: this.timezone,

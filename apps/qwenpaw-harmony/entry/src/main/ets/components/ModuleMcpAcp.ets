@@ -72,7 +72,7 @@ export struct ModuleMcpAcp {
     body: string | null): Promise<http.HttpResponse> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
-      throw new Error('未连接');
+      throw new Error(this.t($r('app.string.wb_not_connected')));
     }
     return doRequest(`${c.baseUrl}/api${path}`, method, body,
       c.token.length > 0 ? c.token : null, c.agentId);
@@ -301,7 +301,7 @@ export struct ModuleMcpAcp {
       } else {
         IosGroup({ title: `${this.t($r('app.string.module_mcp_group'))} · ${this.clients.length}` }) {
           IosRow({
-            icon: $r('sys.symbol.puzzle'),
+            icon: $r('app.media.puzzle'),
             label: this.t($r('app.string.module_mcp_add')),
             subtitle: this.t($r('app.string.module_mcp_add_hint')),
             tappable: !this.busy,
@@ -311,7 +311,7 @@ export struct ModuleMcpAcp {
           })
           ForEach(this.clients, (info: McpClientInfo) => {
             IosRow({
-              icon: $r('sys.symbol.puzzle'),
+              icon: $r('app.media.puzzle'),
               label: info.name,
               subtitle: this.subtitleOf(info),
               hasSwitch: true,
@@ -327,7 +327,7 @@ export struct ModuleMcpAcp {
           }, (info: McpClientInfo) => info.key)
         }
         if (this.clients.length === 0) {
-          ModuleEmpty($r('sys.symbol.puzzle'),
+          ModuleEmpty($r('app.media.puzzle'),
             this.t($r('app.string.module_mcp_empty_title')),
             this.t($r('app.string.module_mcp_empty_subtitle')))
         }

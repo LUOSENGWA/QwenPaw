@@ -61,7 +61,7 @@ export struct ModuleHub {
     body: string | null): Promise<http.HttpResponse> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
-      throw new Error('未连接');
+      throw new Error(this.t($r('app.string.wb_not_connected')));
     }
     return doRequest(`${c.baseUrl}/api${path}`, method, body,
       c.token.length > 0 ? c.token : null, c.agentId);
@@ -177,7 +177,7 @@ export struct ModuleHub {
       } else {
         IosGroup({ title: this.t($r('app.string.module_hub_group_health')) }) {
           IosRow({
-            icon: $r('sys.symbol.bolt'),
+            icon: $r('app.media.zap'),
             label: this.t($r('app.string.module_hub_status')),
             trailing: this.healthOk ? this.field(this.healthJson, 'status')
               : this.t($r('app.string.module_models_na'))
@@ -185,19 +185,19 @@ export struct ModuleHub {
         }
         IosGroup({ title: this.t($r('app.string.module_hub_group_me')) }) {
           IosRow({
-            icon: $r('sys.symbol.person'),
+            icon: $r('app.media.user'),
             label: this.t($r('app.string.module_hub_name')),
             trailing: this.meOk ? this.field(this.meJson, 'name')
               : this.t($r('app.string.module_models_na'))
           })
           IosRow({
-            icon: $r('sys.symbol.link'),
+            icon: $r('app.media.link'),
             label: this.t($r('app.string.module_hub_id')),
             trailing: this.meOk ? this.field(this.meJson, 'id')
               : this.t($r('app.string.module_models_na'))
           })
           IosRow({
-            icon: $r('sys.symbol.checkmark_shield'),
+            icon: $r('app.media.shield_check'),
             label: this.t($r('app.string.module_hub_role')),
             trailing: this.meOk ? this.field(this.meJson, 'role')
               : this.t($r('app.string.module_models_na'))
@@ -207,14 +207,14 @@ export struct ModuleHub {
           if (this.runtimesOk) {
             ForEach(this.runtimes, (row: RuntimeRow) => {
               IosRow({
-                icon: $r('sys.symbol.desktop'),
+                icon: $r('app.media.monitor'),
                 label: row.name,
                 subtitle: row.status
               })
             }, (row: RuntimeRow) => row.id)
           } else {
             IosRow({
-              icon: $r('sys.symbol.desktop'),
+              icon: $r('app.media.monitor'),
               label: this.t($r('app.string.module_hub_group_runtimes')),
               subtitle: this.t($r('app.string.module_hub_unsupported'))
             })
@@ -222,7 +222,7 @@ export struct ModuleHub {
         }
         IosGroup({ title: this.t($r('app.string.module_hub_group_actions')) }) {
           IosRow({
-            icon: $r('sys.symbol.arrow_clockwise'),
+            icon: $r('app.media.refresh_cw'),
             label: this.t($r('app.string.module_hub_restart')),
             subtitle: this.t($r('app.string.module_hub_restart_hint')),
             tappable: !this.busy,

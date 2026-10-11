@@ -45,11 +45,13 @@ export struct IosGroup {
 
 @Component
 export struct IosRow {
-  icon: Resource = $r('sys.symbol.folder');
+  icon: Resource = $r('app.media.folder');
   // 下列参数会随父组件状态变化（加载完成、开关/选项改值）→ 必须 @Prop：
   // 无装饰器的成员变量只在构造时赋值，父组件重渲染不会同步（官方状态管理原理：更新以自定义组件为
   // 单位，仅状态变量参与同步），否则会出现"改了值但行上还显示旧值"。
   @Prop showIcon: boolean = true;
+  // 图标是鸿蒙系统符号（如设置齿轮）时走 SymbolGlyph —— media/符号无法从 Resource 判类型，须显式标记
+  @Prop iconSymbol: boolean = false;
   @Prop label: string = '';
   @Prop subtitle: string = '';
   @Prop trailing: string = '';
@@ -58,8 +60,9 @@ export struct IosRow {
   @Prop hasSwitch: boolean = false;
   @Prop switchOn: boolean = false;
   onSwitch: (on: boolean) => void = (): void => {};
-  // 可点击时才显示箭头
+  // 可点击时才显示箭头；showChevron 是显式覆盖项（文件列表里"单文件"不给箭头，只有文件夹有）
   @Prop tappable: boolean = false;
+  @Prop showChevron: boolean = true;
   onPress: () => void = (): void => {};
   @State pressed: boolean = false;
   private latch: PressLatch = new PressLatch();
@@ -75,9 +78,15 @@ export struct IosRow {
       Row() {
         if (this.showIcon) {
           Stack() {
-            SymbolGlyph(this.icon)
-              .fontSize(18)
-              .fontColor([$r('app.color.text_secondary')])
+            if (this.iconSymbol) {
+              SymbolGlyph(this.icon)
+                .fontSize(18)
+                .fontColor([$r('app.color.text_secondary')])
+            } else {
+              Image(this.icon)
+                .width(18).height(18)
+                .fillColor($r('app.color.text_secondary'))
+            }
           }
           .width(30)
           .height(30)
@@ -120,10 +129,10 @@ export struct IosRow {
             .constraintSize({ maxWidth: 150 })
             .margin({ left: 8 })
         }
-        if (this.tappable) {
-          Text('›')
-            .fontSize(20)
-            .fontColor($r('app.color.text_tertiary'))
+        if (this.tappable && this.showChevron) {
+          Image($r('app.media.chevron_right'))
+            .width(16).height(16)
+            .fillColor($r('app.color.text_tertiary'))
             .margin({ left: 4 })
         }
       }

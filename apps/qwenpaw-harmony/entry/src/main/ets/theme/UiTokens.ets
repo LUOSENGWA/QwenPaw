@@ -7,6 +7,18 @@
  *     旧值 182vp 会让满宽搜索胶囊压住智能体卡顶部 21vp）。
  */
 
+import { display } from '@kit.ArkUI';
+
+// 设备密度（px / vp）：窗口避让区等量以 px 给出，换算 vp 不能写死密度（平板/PC 会算错）。
+// 取不到时回落 3.5（手机实测值）。
+export function pxPerVp(): number {
+  try {
+    return display.getDefaultDisplaySync().densityPixels;
+  } catch (e) {
+    return 3.5;
+  }
+}
+
 export class UiTokens {
   static readonly pageHMargin: number = 16;   // 页面水平边距（卡片左右留白）
   static readonly cardRadius: number = 14;    // 卡片圆角
@@ -20,10 +32,16 @@ export class UiTokens {
   static readonly chatComposerInset: number = 108;
   // 悬浮输入胶囊本体高度 = 内边距 8×2 + 控件 42（显式给高，视效组件按百分比取高时依赖父容器确定尺寸）
   static readonly chatComposerHeight: number = 58;
+  // 悬浮页签栏内容区高（实测栏体 203px → 内容区 175px = 58 - 栏体自身 8vp 留白）
+  static readonly chatComposerBarInner: number = 50;
+  // 状态条与输入胶囊之间的间距（贴紧输入框：留 3vp）
+  static readonly chatRuntimeRowGap: number = 3;
+  // 输入胶囊底边距屏幕底的距离（barFloatingStyle.barBottomMargin，状态条定位需用到）
+  static readonly chatComposerBottomMargin: number = 12;
   static readonly titleSearchStripH: number = 52;  // 智能体页标题栏搜索条区高度（bottomBuilder 叠加在 FREE 标题栏之上）
   // 智能体页内容起点 = 标题栏下缘 151 + 搜索条 52 + 8 呼吸边距（实测：≤203vp 时搜索胶囊压住卡片）
   // 该值同时作为 List 首项占位（spacer）高度：内容可滚到标题栏/搜索条之下（沉浸 + 渐变模糊生效前提）
-  static readonly agentsTopInset: number = 211;
+  static readonly searchStripTopInset: number = 211;
   // 智能体页标题栏进度映射：List 偏移 0→144vp 映射 p 0→1（用于收起键盘等）
   static readonly agentsHeaderScrollVp: number = 144;
   // —— 智能体页列表几何（真机实测，决定「首行卡碰到搜索框」的标题接管时刻）——
@@ -37,6 +55,10 @@ export class UiTokens {
   static readonly titleBarMiniBottom: number = 147;
   static readonly titleGap: number = 12;      // 页标题与内容间距
   static readonly bottomInset: number = 96;   // 底部悬浮 tab 栏（barBottomMargin 28 + 栏高 ~64 + 缓冲），滚动内容末项防遮挡
+  // 社区页标题栏工具条（bottomBuilder）：分段（推荐/最新）+ 发布 一行（52）+ 分类胶囊一行（44），容器透明
+  static readonly communityStripH: number = 96;
+  // 社区页内容起点 = 标题栏下缘 151 + 工具条 96 + 8 呼吸边距（List 首项 spacer 占位）
+  static readonly communityTopInset: number = 151 + 96 + 8;
 
   // 标题接管判定（唯一口径，Index/AgentsTab 共用）：首行智能体卡可见顶越过 MINI 标题栏 + 搜索条下缘
   // = "列表第一个智能体卡片碰到搜索框"

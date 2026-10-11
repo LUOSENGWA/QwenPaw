@@ -30,6 +30,7 @@ import { ModuleExtensions } from '../components/ModuleExtensions';
 import { ModuleHub } from '../components/ModuleHub';
 import { ThemeManager, ThemeSnapshot } from '../theme/ThemeManager';
 import { UiTokens } from '../theme/UiTokens';
+import { LengthMetrics } from '@kit.ArkUI';
 
 @Builder
 export function ModulePageBuilder(_name: string, param: Object) {
@@ -62,10 +63,9 @@ export struct ModulePage {
         Column() {
           if (this.module !== null) {
             Row() {
-              SymbolGlyph(this.module!.icon)
-                .fontSize(26)
-                .fontColor([this.isDark ? this.theme.accentDark : this.theme.accent])
-                .width(40)
+              Image(this.module!.icon)
+                .width(26).height(26)
+                .fillColor(this.isDark ? this.theme.accentDark : this.theme.accent)
                 .margin({ right: 8 })
               Column() {
                 Text(this.module!.title)
@@ -155,13 +155,27 @@ export struct ModulePage {
         // 与主页同款沉浸：沉浸式渐变模糊 + 系统材质（等级 ADAPTIVE），静止态与滚动终点态都用主题色底。
         // 平台行为：深色下沉浸材质是"变暗玻璃"，会把底色压低（观感偏"透明"，属沉浸固有表现）。
         scrollEffectOpts: {
-          enableScrollEffect: true,
-          scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
+          // enableScrollEffect = false：官方口径「不随内容区滚动动态生效标题栏样式，仅生效 originalStyle」，
+          // 且 GRADIENT_BLUR 下「直接生效模糊。此方式适用于列表型非沉浸式场景」。
+          // 为什么不用 true：为 true 时样式会在 originalStyle→scrollEffectStyle 之间随滚动**插值**，
+          // 上滚过程出现"先变暗、再慢慢回到主题色"的过渡观感（反复被报的"往上滑突然变黑然后慢慢
+          // 出现主题色"）；关掉后底色/模糊只有一个状态，结构上不可能再出现滚动时变色。
+          // 标题栏随滚动收起（titleMode FREE）与内容穿过时的模糊都不受影响。
+          enableScrollEffect: false,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
         },
-        blurStrategy: BlurStrategy.ADAPTIVE,
+        // blurStrategy 用 ENABLE 而不是 ADAPTIVE：官方口径 ADAPTIVE「根据系统策略调整…只有精美档位
+        // 配置能够生效模糊效果」—— 系统策略落在轻柔/流畅档时标题栏模糊整块不生效，内容滚过时就露出
+        // 未模糊的暗色内容（观感即"往上滑突然变黑"）；ENABLE 恒生效，观感才稳定。
+        blurStrategy: BlurStrategy.ENABLE,
         originalStyle: {
           backgroundStyle: {
             blurRadius: 12.0,
+            // 蒙层外扩必须写在**生效态**里：enableScrollEffect=false 时只生效 originalStyle，
+            // 写在 scrollEffectStyle 里会被忽略、退回平台默认外扩（真机实测蒙层 822 → 标题栏底边
+            // 710 之下多出 112px≈56vp），那段在工具条正下方留下一条中性灰带（浅色模式即"接缝"）；
+            // 归零后蒙层与标题栏同底（710），渐隐在标题栏内完成，内容区不再被蒙层压到。
+            maskExtraHeight: 0.0,
             backgroundColor: this.isDark ? this.theme.accentDark : this.theme.accent
           }
         },

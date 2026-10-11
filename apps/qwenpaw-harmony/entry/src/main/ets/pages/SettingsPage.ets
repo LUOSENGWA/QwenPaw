@@ -18,7 +18,16 @@ import { syncConsoleThemeToManager } from '../services/ConsoleTheme';
 import { UiTokens } from '../theme/UiTokens';
 import { SheetGate, moduleSheetOptions } from '../components/SheetGate';
 import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
-import { CONN_CHANGE_EVENT } from '../components/WorkbenchTab';
+import { CONN_CHANGE_EVENT, CONN_STORE_EVENT } from '../components/WorkbenchTab';
+import { ScanRouteParam, StackOnlyParam, requestTab } from '../services/AppEvents';
+import { verifyConnection, describeConnectError } from '../services/ConnectionService';
+import {
+  PlatformRelayNode, PlatformRelayQuota, PlatformRelayStatus, RELAY_CONNECTED,
+  getRelayStatus, authorizeRelay, getRelayQuota, listRelayNodes, revokeRelayNode
+} from '../services/PlatformRelay';
+import { getPlatformAccessToken, PLATFORM_BASE_URL, PlatformSession, loadPlatformSession, platformLogout } from '../services/PlatformSession';
+import { RelayNodesSheet } from '../components/RelayNodesSheet';
+import { LengthMetrics } from '@kit.ArkUI';
 
 @Builder
 export function SettingsPageBuilder(_name: string, param: Object) {
@@ -37,6 +46,25 @@ export struct SettingsPage {
   private themeGate: SheetGate = new SheetGate();
   @State syncEnabled: boolean = false;
   @State syncing: boolean = false;
+  @State reconnecting: boolean = false;
+  // —— Platform 远程访问（中继）——
+  // 仅 hub 模式实例支持：状态取自实例 /remote-access/platform，额度与节点取自 Platform 汇总
+  @State relayStatus: string = '';
+  @State relayNodeId: string = '';
+  @State relayError: string = '';
+  @State relayBusy: boolean = false;
+  @State relayNodes: PlatformRelayNode[] = [];
+  @State relayQuota: PlatformRelayQuota = new PlatformRelayQuota();
+  @State relayNodesShown: boolean = false;
+  @State relayNodesLoading: boolean = false;
+  @State relayNodesError: string = '';
+  @State relayRemovingId: string = '';
+  private relayGate: SheetGate = new SheetGate();
+  // —— Platform 账号（对齐 7378 me.tsx「Platform 账号」组）——
+  // 登录态取自本地会话；从登录/授权页返回时由 onShown 复查
+  @State platformLoggedIn: boolean = false;
+  @State platformUser: string = '';
+  @State platformBusy: boolean = false;
   // 内容区沉浸光感（官方：内容区材质不生效）→ 自绘按压反馈：按下收缩 + 点光源
   @State pressed: number = -1;
   private pressLatch: PressLatch = new PressLatch();
@@ -63,10 +91,104 @@ export struct SettingsPage {
       this.syncEnabled = ThemeManager.get().isSyncEnabled();
     });
     this.reloadConns(ctx);
+    this.refreshRelay(ctx);
+    this.refreshPlatformSession(ctx);
+  }
+
+  // Platform 登录态（本地会话）：控制「Platform 账号」组显示登录入口还是账号 + 退出
+  private refreshPlatformSession(ctx: common.UIAbilityContext): void {
+    loadPlatformSession(ctx).then((session: PlatformSession | null): void => {
+      this.platformLoggedIn = session !== null;
+      this.platformUser = session === null ? '' : session.username;
+    }).catch((e: Object): void => {
+      this.platformLoggedIn = false;
+      this.platformUser = '';
+    });
+  }
+
+  // 当前工作区对应的设备端 Agent 标识（本工程连接模型里 agentId 即该身份的锚点）
+  private currentAgentId(): string {
+    const conn: QpConnection | null = this.currentConn();
+    return conn === null ? '' : conn.agentId;
+  }
+
+  private currentConn(): QpConnection | null {
+    for (const c of this.conns) {
+      if (connectionKey(c) === this.currentKey) {
+        return c;
+      }
+    }
+    return this.conns.length > 0 ? this.conns[0] : null;
+  }
+
+  // 「当前 Agent」行：切到智能体页签（二级页拿到的是根页导航栈，先退回根再请求切页）
+  private openAgentsTab(): void {
+    const stack: NavPathStack | null = this.stack;
+    if (stack !== null) {
+      stack.pop(true);
+    }
+    requestTab(1);
+  }
+
+  // 「登录 Platform」行：进登录页（账号密码 / GitHub 两条路径都在那一页），返回后 onShown 复查
+  private openPlatformLogin(): void {
+    const stack: NavPathStack | null = this.stack;
+    if (stack === null) {
+      return;
+    }
+    const param: StackOnlyParam = { stack: stack };
+    stack.pushPath({ name: 'platform-login', param: param });
+  }
+
+  // 「退出 Platform」：二次确认（对齐 7378 me.tsx confirmPlatformLogout 的文案口径）
+  private confirmPlatformLogout(): void {
+    this.getUIContext().showAlertDialog({
+      title: $r('app.string.settings_platform_logout_title'),
+      message: $r('app.string.settings_platform_logout_msg'),
+      primaryButton: {
+        value: this.t($r('app.string.common_cancel')),
+        action: (): void => {}
+      },
+      secondaryButton: {
+        value: this.t($r('app.string.settings_platform_logout')),
+        fontColor: $r('app.color.status_error'),
+        action: (): void => {
+          this.doPlatformLogout();
+        }
+      }
+    });
+  }
+
+  private doPlatformLogout(): void {
+    if (this.platformBusy) {
+      return;
+    }
+    this.platformBusy = true;
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    platformLogout(ctx).then((): void => {
+      this.platformLoggedIn = false;
+      this.platformUser = '';
+      this.relayStatus = '';
+      this.getUIContext().getPromptAction().showToast({
+        message: this.t($r('app.string.settings_platform_logout_ok'))
+      });
+    }).catch((e: Object): void => {
+      this.getUIContext().getPromptAction().showToast({
+        message: (e as Error).message
+      });
+    }).finally((): void => {
+      this.platformBusy = false;
+    });
   }
 
   onConfigurationUpdate(newConfig: Configuration): void {
     this.isDark = newConfig.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+  }
+
+  // 连接存储变更广播：CONN_CHANGE_EVENT 让其它 tab 刷新；CONN_STORE_EVENT 让会话页重取连接并复核
+  private broadcastConnChange(): void {
+    emitter.emit(CONN_CHANGE_EVENT);
+    emitter.emit(CONN_STORE_EVENT);
   }
 
   private async reloadConns(ctx: common.UIAbilityContext): Promise<void> {
@@ -141,7 +263,7 @@ export struct SettingsPage {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     await switchConnection(ctx, key);
     await this.reloadConns(ctx);
-    emitter.emit(CONN_CHANGE_EVENT);
+    this.broadcastConnChange();
   }
 
   private confirmRemove(conn: QpConnection): void {
@@ -167,7 +289,7 @@ export struct SettingsPage {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     await removeConnection(ctx, connectionKey(conn));
     await this.reloadConns(ctx);
-    emitter.emit(CONN_CHANGE_EVENT);
+    this.broadcastConnChange();
   }
 
   private confirmDisconnectAll(): void {
@@ -185,7 +307,7 @@ export struct SettingsPage {
           const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
           clearConnection(ctx).then((): void => {
             this.reloadConns(ctx);
-            emitter.emit(CONN_CHANGE_EVENT);
+            this.broadcastConnChange();
           });
         }
       }
@@ -197,6 +319,18 @@ export struct SettingsPage {
       const param: Record<string, string> = { 'key': key };
       this.stack.pushPath({ name: 'module', param: param });
     }
+  }
+
+  private openScan(): void {
+    if (this.stack === null) {
+      return;
+    }
+    const param: ScanRouteParam = { stack: this.stack };
+    this.stack.pushPathByName('scan', param, (_info: PopInfo): void => {
+      const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      this.reloadConns(ctx);
+      this.broadcastConnChange();
+    });
   }
 
   private t(res: Resource): string {
@@ -299,9 +433,9 @@ export struct SettingsPage {
           .fontColor($r('app.color.text_tertiary'))
           .margin({ right: 6 })
       }
-      SymbolGlyph($r('sys.symbol.xmark'))
-        .fontSize(16)
-        .fontColor([$r('app.color.text_tertiary')])
+      Image($r('app.media.x'))
+        .width(16).height(16)
+        .fillColor($r('app.color.text_tertiary'))
         .padding(6)
         .onClick((): void => {
           this.confirmRemove(conn);
@@ -319,6 +453,408 @@ export struct SettingsPage {
     })
     .onClick((): void => {
       this.onSwitch(connectionKey(conn));
+    })
+  }
+
+  @Builder
+  pairNewRow() {
+    Row() {
+      Column() {
+        Text($r('app.string.settings_pair_new'))
+          .fontSize(UiTokens.fsBody)
+          .fontWeight(FontWeight.Medium)
+        Text($r('app.string.settings_pair_new_copy'))
+          .fontSize(UiTokens.fsCaption)
+          .fontColor($r('app.color.text_tertiary'))
+          .margin({ top: 2 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Image($r('app.media.qr_code'))
+        .width(18).height(18)
+        .fillColor(this.accentColor())
+    }
+    .width('100%')
+    .padding(UiTokens.cardPad)
+    .borderRadius(UiTokens.cardRadius)
+    .backgroundColor($r('app.color.card_glass'))
+    .margin({ top: 6 })
+    .scale({ x: this.isPressed(160) ? PRESS_SCALE : 1, y: this.isPressed(160) ? PRESS_SCALE : 1 })
+    .visualEffect(pressEffect(this.isPressed(160)))
+    .onTouch((e: TouchEvent): void => {
+      this.onPress(160, e);
+    })
+    .onClick((): void => {
+      this.openScan();
+    })
+  }
+
+  // 云端 QwenPaw（平台部署）：创建 / 状态 / 日志 / 重启 / 切版本（对齐 7378 app/platform/deploy.tsx）
+  private openDeploy(): void {
+    if (this.stack === null) {
+      return;
+    }
+    const param: StackOnlyParam = { stack: this.stack };
+    this.stack.pushPath({ name: 'platform-deploy', param: param });
+  }
+
+  // 重新连接当前工作区（原首页连接卡的「重新连接」入口迁到此处，与连接管理同页）
+  @Builder
+  reconnectRow() {
+    Row() {
+      Column() {
+        Text($r('app.string.settings_reconnect'))
+          .fontSize(UiTokens.fsBody)
+          .fontWeight(FontWeight.Medium)
+        Text($r('app.string.settings_reconnect_copy'))
+          .fontSize(UiTokens.fsCaption)
+          .fontColor($r('app.color.text_tertiary'))
+          .margin({ top: 2 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      if (this.reconnecting) {
+        LoadingProgress()
+          .width(20)
+          .height(20)
+          .color(this.accentColor())
+      } else {
+        Image($r('app.media.refresh_cw'))
+          .width(18).height(18)
+          .fillColor(this.accentColor())
+      }
+    }
+    .width('100%')
+    .padding(UiTokens.cardPad)
+    .borderRadius(UiTokens.cardRadius)
+    .backgroundColor($r('app.color.card_glass'))
+    .margin({ top: 6 })
+    .scale({ x: this.isPressed(170) ? PRESS_SCALE : 1, y: this.isPressed(170) ? PRESS_SCALE : 1 })
+    .visualEffect(pressEffect(this.isPressed(170)))
+    .onTouch((e: TouchEvent): void => {
+      this.onPress(170, e);
+    })
+    .onClick((): void => {
+      this.reconnect();
+    })
+  }
+
+  // 用已落盘连接（含 token）复核当前工作区：成功/失败都给出提示，不重新兑换配对码
+  private async reconnect(): Promise<void> {
+    if (this.reconnecting) {
+      return;
+    }
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const conn: QpConnection | null = await loadConnection(ctx);
+    if (conn === null) {
+      this.getUIContext().getPromptAction().showToast({
+        message: this.t($r('app.string.wb_not_connected'))
+      });
+      return;
+    }
+    this.reconnecting = true;
+    try {
+      await verifyConnection(conn);
+      this.broadcastConnChange();
+      this.getUIContext().getPromptAction().showToast({
+        message: this.t($r('app.string.settings_reconnect_ok'))
+      });
+    } catch (e) {
+      this.getUIContext().showAlertDialog({
+        title: this.t($r('app.string.settings_reconnect_failed')),
+        message: describeConnectError(conn.baseUrl, e as Error)
+      });
+    } finally {
+      this.reconnecting = false;
+    }
+  }
+
+  // ==================== Platform 远程访问（中继）====================
+  // 只有 hub 模式实例才有 /remote-access/platform；LAN 直连实例整段不出现。
+
+  private hubConn(): QpConnection | null {
+    for (const c of this.conns) {
+      if (connectionKey(c) === this.currentKey && c.serverMode === 'hub') {
+        return c;
+      }
+    }
+    return null;
+  }
+
+  private async refreshRelay(ctx: common.UIAbilityContext): Promise<void> {
+    const conn: QpConnection | null = this.hubConn();
+    if (conn === null) {
+      this.relayStatus = '';
+      this.relayNodeId = '';
+      this.relayError = '';
+      return;
+    }
+    try {
+      const status: PlatformRelayStatus = await getRelayStatus(conn.baseUrl, conn.token, conn.agentId);
+      this.relayStatus = status.status;
+      this.relayNodeId = status.nodeId;
+      this.relayError = '';
+    } catch (e) {
+      this.relayStatus = '';
+      this.relayNodeId = '';
+      this.relayError = (e as Error).message;
+    }
+  }
+
+  // 开启 / 重授权：未登录先跳 Platform 登录页（与发布文章同一套口径）
+  private async authorizeRelayNow(): Promise<void> {
+    if (this.relayBusy) {
+      return;
+    }
+    const conn: QpConnection | null = this.hubConn();
+    if (conn === null) {
+      return;
+    }
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    this.relayBusy = true;
+    try {
+      const session: PlatformSession | null = await loadPlatformSession(ctx);
+      if (session === null) {
+        this.getUIContext().getPromptAction().showToast({
+          message: this.t($r('app.string.relay_login_required'))
+        });
+        return;
+      }
+      const token: string = await getPlatformAccessToken(ctx);
+      if (token.length === 0) {
+        this.getUIContext().getPromptAction().showToast({
+          message: this.t($r('app.string.relay_login_required'))
+        });
+        return;
+      }
+      const name: string = conn.username.length > 0 ? `${conn.username} 的 QwenPaw` : hostOf(conn.baseUrl);
+      const status: PlatformRelayStatus =
+        await authorizeRelay(conn.baseUrl, conn.token, conn.agentId, token, PLATFORM_BASE_URL, name);
+      this.relayStatus = status.status;
+      this.relayNodeId = status.nodeId;
+      this.relayError = '';
+      this.getUIContext().showAlertDialog({
+        title: this.t($r('app.string.relay_auth_ok_title')),
+        message: this.t($r('app.string.relay_auth_ok_copy'))
+      });
+    } catch (e) {
+      const msg: string = (e as Error).message;
+      this.relayError = msg;
+      this.getUIContext().showAlertDialog({
+        title: this.t($r('app.string.relay_auth_fail_title')),
+        message: msg
+      });
+    } finally {
+      this.relayBusy = false;
+    }
+  }
+
+  // 二次确认：已连接时重授权会换绑到当前 Platform 账号
+  private confirmRelay(): void {
+    if (this.relayBusy) {
+      return;
+    }
+    if (this.relayStatus !== RELAY_CONNECTED) {
+      this.authorizeRelayNow();
+      return;
+    }
+    this.getUIContext().showAlertDialog({
+      title: this.t($r('app.string.relay_group_title')),
+      message: this.t($r('app.string.relay_reauthorize_copy')),
+      primaryButton: {
+        value: this.t($r('app.string.common_cancel')),
+        action: (): void => {
+        }
+      },
+      secondaryButton: {
+        value: this.t($r('app.string.relay_reauthorize_action')),
+        action: (): void => {
+          this.authorizeRelayNow();
+        }
+      }
+    });
+  }
+
+  private openRelayNodes(): void {
+    if (this.relayGate.request()) {
+      this.relayNodesShown = true;
+    }
+  }
+
+  // 面板数据面：额度 + 节点（Platform 汇总）
+  private async loadRelayNodes(): Promise<void> {
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    this.relayNodesLoading = true;
+    this.relayNodesError = '';
+    try {
+      const quota: PlatformRelayQuota = await getRelayQuota(ctx);
+      const nodes: PlatformRelayNode[] = await listRelayNodes(ctx);
+      this.relayQuota = quota;
+      this.relayNodes = nodes;
+    } catch (e) {
+      this.relayNodesError = (e as Error).message;
+    } finally {
+      this.relayNodesLoading = false;
+    }
+  }
+
+  private async revokeRelayNodeNow(nodeId: string): Promise<void> {
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    this.relayRemovingId = nodeId;
+    try {
+      await revokeRelayNode(ctx, nodeId);
+      this.relayNodes = this.relayNodes.filter((n: PlatformRelayNode): boolean => n.id !== nodeId);
+      const next: PlatformRelayQuota = new PlatformRelayQuota();
+      next.used = Math.max(0, this.relayQuota.used - 1);
+      next.limit = this.relayQuota.limit;
+      next.canBind = true;
+      this.relayQuota = next;
+      if (nodeId === this.relayNodeId) {
+        this.relayStatus = '';
+        this.relayNodeId = '';
+      }
+      // 本机状态以实例为准，回收后再核一次
+      await this.refreshRelay(ctx);
+    } catch (e) {
+      this.relayNodesError = (e as Error).message;
+    } finally {
+      this.relayRemovingId = '';
+    }
+  }
+
+  // Platform 远程访问：连接/重授权行（hub 模式实例专属）
+  @Builder
+  relayRow() {
+    Row() {
+      Column() {
+        Text(this.relayStatus === RELAY_CONNECTED
+          ? $r('app.string.relay_row_connected') : $r('app.string.relay_row_disconnected'))
+          .fontSize(UiTokens.fsBody)
+          .fontWeight(FontWeight.Medium)
+        Text(this.relayError.length > 0 ? this.relayError
+          : (this.relayStatus === RELAY_CONNECTED
+            ? $r('app.string.relay_row_sub_on') : $r('app.string.relay_row_sub_off')))
+          .fontSize(UiTokens.fsCaption)
+          .fontColor(this.relayError.length > 0
+            ? $r('app.color.status_error') : $r('app.color.text_tertiary'))
+          .margin({ top: 2 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+
+      if (this.relayBusy) {
+        LoadingProgress()
+          .width(20)
+          .height(20)
+          .color(this.accentColor())
+      } else {
+        Text(this.relayStatus === RELAY_CONNECTED
+          ? $r('app.string.relay_trailing_on') : $r('app.string.relay_trailing_off'))
+          .fontSize(UiTokens.fsCaption)
+          .fontColor($r('app.color.text_tertiary'))
+        Image($r('app.media.chevron_right'))
+          .width(16).height(16)
+          .fillColor($r('app.color.text_tertiary'))
+          .margin({ left: 6 })
+      }
+    }
+    .width('100%')
+    .padding(UiTokens.cardPad)
+    .borderRadius(UiTokens.cardRadius)
+    .backgroundColor($r('app.color.card_glass'))
+    .margin({ bottom: 6 })
+    .scale({ x: this.isPressed(190) ? PRESS_SCALE : 1, y: this.isPressed(190) ? PRESS_SCALE : 1 })
+    .visualEffect(pressEffect(this.isPressed(190)))
+    .onTouch((e: TouchEvent): void => {
+      this.onPress(190, e);
+    })
+    .onClick((): void => {
+      this.confirmRelay();
+    })
+  }
+
+  // 自部署连接管理入口（额度 / 解绑 / 清理离线）
+  @Builder
+  relayNodesRow() {
+    Row() {
+      Column() {
+        Text($r('app.string.relay_nodes_row'))
+          .fontSize(UiTokens.fsBody)
+          .fontWeight(FontWeight.Medium)
+        Text($r('app.string.relay_nodes_row_sub'))
+          .fontSize(UiTokens.fsCaption)
+          .fontColor($r('app.color.text_tertiary'))
+          .margin({ top: 2 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Image($r('app.media.chevron_right'))
+        .width(16).height(16)
+        .fillColor($r('app.color.text_tertiary'))
+    }
+    .width('100%')
+    .padding(UiTokens.cardPad)
+    .borderRadius(UiTokens.cardRadius)
+    .backgroundColor($r('app.color.card_glass'))
+    .scale({ x: this.isPressed(191) ? PRESS_SCALE : 1, y: this.isPressed(191) ? PRESS_SCALE : 1 })
+    .visualEffect(pressEffect(this.isPressed(191)))
+    .onTouch((e: TouchEvent): void => {
+      this.onPress(191, e);
+    })
+    .onClick((): void => {
+      this.openRelayNodes();
+    })
+  }
+
+  @Builder
+  relayNodesSheet() {
+    RelayNodesSheet({
+      nodes: this.relayNodes,
+      quota: this.relayQuota,
+      currentNodeId: this.relayNodeId,
+      loading: this.relayNodesLoading,
+      removingId: this.relayRemovingId,
+      error: this.relayNodesError,
+      onReload: (): void => {
+        this.loadRelayNodes();
+      },
+      onRevoke: (nodeId: string): void => {
+        this.revokeRelayNodeNow(nodeId);
+      }
+    })
+  }
+
+  // 云端部署入口行（与扫码配对/重连同区）
+  @Builder
+  deployRow() {
+    Row() {
+      Column() {
+        Text($r('app.string.pd_title'))
+          .fontSize(UiTokens.fsBody)
+          .fontWeight(FontWeight.Medium)
+        Text($r('app.string.pd_settings_copy'))
+          .fontSize(UiTokens.fsCaption)
+          .fontColor($r('app.color.text_tertiary'))
+          .margin({ top: 2 })
+      }
+      .alignItems(HorizontalAlign.Start)
+      .layoutWeight(1)
+      Image($r('app.media.cloud'))
+        .width(18).height(18)
+        .fillColor(this.accentColor())
+    }
+    .width('100%')
+    .padding(UiTokens.cardPad)
+    .borderRadius(UiTokens.cardRadius)
+    .backgroundColor($r('app.color.card_glass'))
+    .margin({ top: 6 })
+    .scale({ x: this.isPressed(180) ? PRESS_SCALE : 1, y: this.isPressed(180) ? PRESS_SCALE : 1 })
+    .visualEffect(pressEffect(this.isPressed(180)))
+    .onTouch((e: TouchEvent): void => {
+      this.onPress(180, e);
+    })
+    .onClick((): void => {
+      this.openDeploy();
     })
   }
 
@@ -351,6 +887,178 @@ export struct SettingsPage {
           ForEach(this.conns, (c: QpConnection, i: number) => {
             this.connRow(c, i)
           }, (c: QpConnection) => connectionKey(c))
+          this.pairNewRow()
+          this.reconnectRow()
+          this.deployRow()
+
+          // Platform 远程访问（中继）：仅 hub 模式实例（对齐 7378 me.tsx 的 serverMode === "hub" 条件）
+          if (this.hubConn() !== null) {
+            this.sectionTitle($r('app.string.relay_group_title'))
+            this.relayRow()
+            this.relayNodesRow()
+          }
+
+          this.sectionTitle($r('app.string.settings_current_agent'))
+          // 当前 Agent：点按切到智能体页签（7378 me.tsx 的该组另有「重新连接」行，本页已在
+          // 「已配对」组承载，故不重复）。trailing 不再重复 agentId —— 本工程连接模型里
+          // agentId 就是该身份的锚点，7378 的 trailing 同样是 id。
+          Row({ space: 10 }) {
+            Image($r('app.media.bot'))
+              .width(20)
+              .height(20)
+              .fillColor(this.accentColor())
+            Column() {
+              Text(this.currentAgentId().length > 0
+                ? this.currentAgentId() : this.t($r('app.string.wb_not_connected')))
+                .fontSize(UiTokens.fsBody)
+                .fontWeight(FontWeight.Medium)
+              Text($r('app.string.settings_current_agent_hint'))
+                .fontSize(UiTokens.fsCaption)
+                .fontColor($r('app.color.text_tertiary'))
+                .margin({ top: 2 })
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+            Image($r('app.media.chevron_right'))
+              .width(16).height(16)
+              .fillColor($r('app.color.text_tertiary'))
+          }
+          .width('100%')
+          .padding(UiTokens.cardPad)
+          .borderRadius(UiTokens.cardRadius)
+          .backgroundColor($r('app.color.card_glass'))
+          .scale({ x: this.isPressed(210) ? PRESS_SCALE : 1, y: this.isPressed(210) ? PRESS_SCALE : 1 })
+          .visualEffect(pressEffect(this.isPressed(210)))
+          .onTouch((e: TouchEvent): void => {
+            this.onPress(210, e);
+          })
+          .onClick((): void => {
+            this.openAgentsTab();
+          })
+
+          // Platform 账号（对齐 7378 me.tsx「Platform 账号」组）：账号态行 + 登录/退出。
+          // 7378 该组内的「自部署连接」行在本页由「Platform 远程访问」组承载，故不重复。
+          this.sectionTitle($r('app.string.settings_platform_group'))
+          Row({ space: 10 }) {
+            Image($r('app.media.cloud'))
+              .width(20)
+              .height(20)
+              .fillColor(this.accentColor())
+            Column() {
+              Text($r('app.string.settings_platform_account'))
+                .fontSize(UiTokens.fsBody)
+                .fontWeight(FontWeight.Medium)
+              Text(this.platformLoggedIn
+                ? (this.platformUser.length > 0
+                  ? this.platformUser : this.t($r('app.string.settings_platform_logged_hint')))
+                : this.t($r('app.string.settings_platform_login_hint')))
+                .fontSize(UiTokens.fsCaption)
+                .fontColor($r('app.color.text_tertiary'))
+                .margin({ top: 2 })
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+            Text(this.platformLoggedIn
+              ? $r('app.string.settings_platform_logged')
+              : $r('app.string.settings_platform_logged_out'))
+              .fontSize(UiTokens.fsCaption)
+              .fontColor($r('app.color.text_tertiary'))
+          }
+          .width('100%')
+          .padding(UiTokens.cardPad)
+          .borderRadius(UiTokens.cardRadius)
+          .backgroundColor($r('app.color.card_glass'))
+
+          if (this.platformLoggedIn) {
+            Row({ space: 10 }) {
+              Image($r('app.media.log_out'))
+                .width(20)
+                .height(20)
+                .fillColor($r('app.color.status_error'))
+              Column() {
+                Text($r('app.string.settings_platform_logout'))
+                  .fontSize(UiTokens.fsBody)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor($r('app.color.status_error'))
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+            }
+            .width('100%')
+            .padding(UiTokens.cardPad)
+            .borderRadius(UiTokens.cardRadius)
+            .backgroundColor($r('app.color.card_glass'))
+            .margin({ top: 6 })
+            .scale({ x: this.isPressed(220) ? PRESS_SCALE : 1, y: this.isPressed(220) ? PRESS_SCALE : 1 })
+            .visualEffect(pressEffect(this.isPressed(220)))
+            .onTouch((e: TouchEvent): void => {
+              this.onPress(220, e);
+            })
+            .onClick((): void => {
+              this.confirmPlatformLogout();
+            })
+          } else {
+            Row({ space: 10 }) {
+              Image($r('app.media.log_in'))
+                .width(20)
+                .height(20)
+                .fillColor(this.accentColor())
+              Column() {
+                Text($r('app.string.settings_platform_login'))
+                  .fontSize(UiTokens.fsBody)
+                  .fontWeight(FontWeight.Medium)
+                Text($r('app.string.settings_platform_login_sub'))
+                  .fontSize(UiTokens.fsCaption)
+                  .fontColor($r('app.color.text_tertiary'))
+                  .margin({ top: 2 })
+              }
+              .alignItems(HorizontalAlign.Start)
+              .layoutWeight(1)
+              Image($r('app.media.chevron_right'))
+                .width(16).height(16)
+                .fillColor($r('app.color.text_tertiary'))
+            }
+            .width('100%')
+            .padding(UiTokens.cardPad)
+            .borderRadius(UiTokens.cardRadius)
+            .backgroundColor($r('app.color.card_glass'))
+            .margin({ top: 6 })
+            .scale({ x: this.isPressed(220) ? PRESS_SCALE : 1, y: this.isPressed(220) ? PRESS_SCALE : 1 })
+            .visualEffect(pressEffect(this.isPressed(220)))
+            .onTouch((e: TouchEvent): void => {
+              this.onPress(220, e);
+            })
+            .onClick((): void => {
+              this.openPlatformLogin();
+            })
+          }
+
+          // 设备（对齐 7378 me.tsx「设备」组：配对状态）
+          this.sectionTitle($r('app.string.settings_device_group'))
+          Row({ space: 10 }) {
+            Image($r('app.media.shield_check'))
+              .width(20)
+              .height(20)
+              .fillColor(this.accentColor())
+            Column() {
+              Text($r('app.string.settings_device_paired'))
+                .fontSize(UiTokens.fsBody)
+                .fontWeight(FontWeight.Medium)
+              Text($r('app.string.settings_device_paired_hint'))
+                .fontSize(UiTokens.fsCaption)
+                .fontColor($r('app.color.text_tertiary'))
+                .margin({ top: 2 })
+            }
+            .alignItems(HorizontalAlign.Start)
+            .layoutWeight(1)
+            Text($r('app.string.settings_device_paired_value'))
+              .fontSize(UiTokens.fsCaption)
+              .fontColor($r('app.color.text_tertiary'))
+          }
+          .width('100%')
+          .padding(UiTokens.cardPad)
+          .borderRadius(UiTokens.cardRadius)
+          .backgroundColor($r('app.color.card_glass'))
 
           this.sectionTitle($r('app.string.settings_theme'))
           Row() {
@@ -372,9 +1080,9 @@ export struct SettingsPage {
             }
             .alignItems(HorizontalAlign.Start)
             .layoutWeight(1)
-            Text('›')
-              .fontSize(20)
-              .fontColor($r('app.color.text_tertiary'))
+            Image($r('app.media.chevron_right'))
+              .width(16).height(16)
+              .fillColor($r('app.color.text_tertiary'))
           }
           .width('100%')
           .padding(UiTokens.cardPad)
@@ -424,9 +1132,9 @@ export struct SettingsPage {
                 .height(20)
                 .color(this.accentColor())
             } else {
-              Text('›')
-                .fontSize(20)
-                .fontColor($r('app.color.text_tertiary'))
+              Image($r('app.media.chevron_right'))
+                .width(16).height(16)
+                .fillColor($r('app.color.text_tertiary'))
             }
           }
           .width('100%')
@@ -445,9 +1153,9 @@ export struct SettingsPage {
 
           this.sectionTitle($r('app.string.settings_security_group'))
           Row() {
-            SymbolGlyph($r('sys.symbol.checkmark_shield'))
-              .fontSize(20)
-              .fontColor([this.accentColor()])
+            Image($r('app.media.shield_check'))
+              .width(20).height(20)
+              .fillColor(this.accentColor())
               .margin({ right: 10 })
             Column() {
               Text($r('app.string.settings_security'))
@@ -460,9 +1168,9 @@ export struct SettingsPage {
             }
             .alignItems(HorizontalAlign.Start)
             .layoutWeight(1)
-            Text('›')
-              .fontSize(20)
-              .fontColor($r('app.color.text_tertiary'))
+            Image($r('app.media.chevron_right'))
+              .width(16).height(16)
+              .fillColor($r('app.color.text_tertiary'))
           }
           .width('100%')
           .padding(UiTokens.cardPad)
@@ -506,6 +1214,12 @@ export struct SettingsPage {
             (v: boolean): void => {
               this.themePickerShown = v;
             }))
+        // 自部署连接管理：与主题面板同一套闸门口径（避免回退动画期间被框架回写关掉）
+        .bindSheet(this.relayNodesShown, this.relayNodesSheet(),
+          moduleSheetOptions(560, this.relayGate,
+            (v: boolean): void => {
+              this.relayNodesShown = v;
+            }))
       }
       .height('100%')
       .scrollBar(BarState.Auto)
@@ -522,13 +1236,27 @@ export struct SettingsPage {
         // 与主页同款沉浸：沉浸式渐变模糊 + 系统材质（等级 ADAPTIVE），静止态与滚动终点态都用主题色底。
         // 平台行为：深色下沉浸材质是"变暗玻璃"，会把底色压低（观感偏"透明"，属沉浸固有表现）。
         scrollEffectOpts: {
-          enableScrollEffect: true,
-          scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
+          // enableScrollEffect = false：官方口径「不随内容区滚动动态生效标题栏样式，仅生效 originalStyle」，
+          // 且 GRADIENT_BLUR 下「直接生效模糊。此方式适用于列表型非沉浸式场景」。
+          // 为什么不用 true：为 true 时样式会在 originalStyle→scrollEffectStyle 之间随滚动**插值**，
+          // 上滚过程出现"先变暗、再慢慢回到主题色"的过渡观感（反复被报的"往上滑突然变黑然后慢慢
+          // 出现主题色"）；关掉后底色/模糊只有一个状态，结构上不可能再出现滚动时变色。
+          // 标题栏随滚动收起（titleMode FREE）与内容穿过时的模糊都不受影响。
+          enableScrollEffect: false,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
         },
-        blurStrategy: BlurStrategy.ADAPTIVE,
+        // blurStrategy 用 ENABLE 而不是 ADAPTIVE：官方口径 ADAPTIVE「根据系统策略调整…只有精美档位
+        // 配置能够生效模糊效果」—— 系统策略落在轻柔/流畅档时标题栏模糊整块不生效，内容滚过时就露出
+        // 未模糊的暗色内容（观感即"往上滑突然变黑"）；ENABLE 恒生效，观感才稳定。
+        blurStrategy: BlurStrategy.ENABLE,
         originalStyle: {
           backgroundStyle: {
             blurRadius: 12.0,
+            // 蒙层外扩必须写在**生效态**里：enableScrollEffect=false 时只生效 originalStyle，
+            // 写在 scrollEffectStyle 里会被忽略、退回平台默认外扩（真机实测蒙层 822 → 标题栏底边
+            // 710 之下多出 112px≈56vp），那段在工具条正下方留下一条中性灰带（浅色模式即"接缝"）；
+            // 归零后蒙层与标题栏同底（710），渐隐在标题栏内完成，内容区不再被蒙层压到。
+            maskExtraHeight: 0.0,
             backgroundColor: this.isDark ? this.theme.accentDark : this.theme.accent
           }
         },
@@ -551,6 +1279,11 @@ export struct SettingsPage {
       // 与主页一致：标题栏不避让安全区向上铺到状态栏区域，组件安全区关闭（否则状态栏带露系统底）
       avoidLayoutSafeArea: false,
       enableComponentSafeArea: false
+    })
+    .onShown((): void => {
+      // 从 Platform 登录/授权页返回：复查登录态（登录成功后本页的流程与远程访问行随之可用）
+      const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      this.refreshPlatformSession(ctx);
     })
   }
 }

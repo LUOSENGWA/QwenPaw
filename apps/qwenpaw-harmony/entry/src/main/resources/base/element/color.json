@@ -58,7 +58,7 @@
     },
     {
       "name": "page_bg",
-      "value": "#EBE7DF"
+      "value": "#EEEAE2"
     },
     {
       "name": "card_surface",
@@ -79,6 +79,30 @@
     {
       "name": "sheet_card_bg",
       "value": "#DDD8CF"
+    },
+    {
+      "name": "scan_bg",
+      "value": "#0A0C0A"
+    },
+    {
+      "name": "scan_scrim",
+      "value": "#59000000"
+    },
+    {
+      "name": "scan_glass",
+      "value": "#33FFFFFF"
+    },
+    {
+      "name": "scan_text_dim",
+      "value": "#B8FFFFFF"
+    },
+    {
+      "name": "scan_error",
+      "value": "#FFD0CB"
+    },
+    {
+      "name": "composer_label",
+      "value": "#666666"
     }
   ]
 }

@@ -458,7 +458,7 @@ export struct ModuleCheckpoints {
       } else {
         IosGroup({ title: this.t($r('app.string.module_cp_group')) }) {
           IosRow({
-            icon: $r('sys.symbol.clock'),
+            icon: $r('app.media.clock'),
             label: this.t($r('app.string.module_cp_auto')),
             subtitle: this.t($r('app.string.module_cp_auto_hint')),
             hasSwitch: true,
@@ -468,7 +468,7 @@ export struct ModuleCheckpoints {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.plus'),
+            icon: $r('app.media.plus'),
             label: this.t($r('app.string.module_cp_snap')),
             subtitle: this.t($r('app.string.module_cp_snap_hint')),
             tappable: true,
@@ -487,7 +487,7 @@ export struct ModuleCheckpoints {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.trash'),
+            icon: $r('app.media.trash_2'),
             label: this.t($r('app.string.module_cp_clean')),
             subtitle: this.t($r('app.string.module_cp_clean_hint')),
             destructive: true,
@@ -501,7 +501,7 @@ export struct ModuleCheckpoints {
           IosGroup({ title: `${this.t($r('app.string.module_cp_history'))} · ${this.total}` }) {
             ForEach(this.nodes.slice(0, 30), (node: CpNode) => {
               IosRow({
-                icon: node.kind === 'snap' ? $r('sys.symbol.plus') : $r('sys.symbol.clock'),
+                icon: node.kind === 'snap' ? $r('app.media.plus') : $r('app.media.clock'),
                 label: node.name.length > 0 ? node.name
                   : (node.subject.length > 0 ? node.subject : this.kindLabel(node.kind)),
                 subtitle: `${node.sessionTitle.length > 0 ? node.sessionTitle : node.sessionId}`
@@ -515,7 +515,7 @@ export struct ModuleCheckpoints {
             }, (node: CpNode) => node.key)
           }
         } else {
-          ModuleEmpty($r('sys.symbol.clock'),
+          ModuleEmpty($r('app.media.clock'),
             this.t($r('app.string.module_cp_empty_title')),
             this.t($r('app.string.module_cp_empty_copy')))
         }

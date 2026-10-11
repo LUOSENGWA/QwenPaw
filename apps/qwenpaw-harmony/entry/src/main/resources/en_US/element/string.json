@@ -1,6 +1,10 @@
 {
   "string": [
     {
+      "name": "chat_files_section",
+      "value": "Files (%d)"
+    },
+    {
       "name": "module_desc",
       "value": "QwenPaw HarmonyOS entry module"
     },
@@ -11,10 +15,6 @@
     {
       "name": "EntryAbility_label",
       "value": "QwenPaw"
-    },
-    {
-      "name": "camera_reason",
-      "value": "Used to scan QwenPaw pairing codes (qwenpaw://pair QR)"
     },
     {
       "name": "tab_chats",
@@ -1354,7 +1354,7 @@
     },
     {
       "name": "cp_url_placeholder",
-      "value": "http://192.168.x.x:8088, or paste a qwenpaw://pair code"
+      "value": "http://192.0.2.10:8088, or paste a qwenpaw://pair code"
     },
     {
       "name": "cp_ticket",
@@ -1405,16 +1405,324 @@
       "value": "Disconnect"
     },
     {
-      "name": "cp_err_no_camera",
-      "value": "Camera permission not granted. Enter address and pairing code manually."
+      "name": "scan_title",
+      "value": "Scan QwenPaw Console"
     },
     {
-      "name": "cp_err_scan_invalid",
-      "value": "Scanned content is not a valid QwenPaw pairing code"
+      "name": "scan_copy",
+      "value": "The pairing code expires after two minutes."
     },
     {
-      "name": "cp_err_scan_cancel",
-      "value": "Scan canceled or failed."
+      "name": "scan_secure",
+      "value": "Secure pairing"
+    },
+    {
+      "name": "scan_linking",
+      "value": "Linking…"
+    },
+    {
+      "name": "scan_start",
+      "value": "Start scanning"
+    },
+    {
+      "name": "scan_retry",
+      "value": "Scan again"
+    },
+    {
+      "name": "scan_cancelled",
+      "value": "Scan canceled."
+    },
+    {
+      "name": "scan_failed",
+      "value": "Scan failed"
+    },
+    {
+      "name": "scan_paired",
+      "value": "Paired"
+    },
+    {
+      "name": "settings_pair_new",
+      "value": "Pair a new device"
+    },
+    {
+      "name": "settings_pair_new_copy",
+      "value": "Scan the pairing QR shown in the QwenPaw workspace"
+    },
+    {
+      "name": "settings_reconnect",
+      "value": "Reconnect this workspace"
+    },
+    {
+      "name": "settings_reconnect_copy",
+      "value": "Verify the connection with the saved credentials"
+    },
+    {
+      "name": "settings_reconnect_ok",
+      "value": "Reconnected"
+    },
+    {
+      "name": "settings_reconnect_failed",
+      "value": "Reconnect failed"
+    },
+    {
+      "name": "settings_current_agent",
+      "value": "Current agent"
+    },
+    {
+      "name": "settings_current_agent_hint",
+      "value": "Avatar, name and agent switching"
+    },
+    {
+      "name": "settings_platform_group",
+      "value": "Platform account"
+    },
+    {
+      "name": "settings_platform_account",
+      "value": "Platform account"
+    },
+    {
+      "name": "settings_platform_logged",
+      "value": "Signed in"
+    },
+    {
+      "name": "settings_platform_logged_out",
+      "value": "Signed out"
+    },
+    {
+      "name": "settings_platform_logged_hint",
+      "value": "Signed in securely"
+    },
+    {
+      "name": "settings_platform_login_hint",
+      "value": "Browsing needs no sign-in; sign in when you interact"
+    },
+    {
+      "name": "settings_platform_login",
+      "value": "Sign in to Platform"
+    },
+    {
+      "name": "settings_platform_login_sub",
+      "value": "Enable likes, comments and publishing"
+    },
+    {
+      "name": "settings_platform_logout",
+      "value": "Sign out of Platform"
+    },
+    {
+      "name": "settings_platform_logout_title",
+      "value": "Sign out of Platform?"
+    },
+    {
+      "name": "settings_platform_logout_msg",
+      "value": "This signs out the account and cancels all Platform cloud QwenPaw pairings; local and private deployments are unaffected."
+    },
+    {
+      "name": "settings_platform_logout_ok",
+      "value": "Signed out of Platform"
+    },
+    {
+      "name": "settings_device_group",
+      "value": "Device"
+    },
+    {
+      "name": "settings_device_paired",
+      "value": "Pairing status"
+    },
+    {
+      "name": "settings_device_paired_hint",
+      "value": "This device stays paired unless you remove it"
+    },
+    {
+      "name": "settings_device_paired_value",
+      "value": "Paired"
+    },
+    {
+      "name": "pd_title",
+      "value": "Cloud QwenPaw"
+    },
+    {
+      "name": "pd_hero_has",
+      "value": "Opening your QwenPaw"
+    },
+    {
+      "name": "pd_hero_has_sub",
+      "value": "Your sign-in is kept. Once the service is ready you can continue in the console or in the app."
+    },
+    {
+      "name": "pd_hero_new",
+      "value": "Create your cloud QwenPaw"
+    },
+    {
+      "name": "pd_hero_new_sub",
+      "value": "Create an isolated cloud instance in one tap. Chats, skills and settings persist and are restored on redeploy."
+    },
+    {
+      "name": "pd_checking",
+      "value": "Checking your Platform deployment…"
+    },
+    {
+      "name": "pd_step_create",
+      "value": "Create"
+    },
+    {
+      "name": "pd_step_start",
+      "value": "Start"
+    },
+    {
+      "name": "pd_step_pair",
+      "value": "Pair"
+    },
+    {
+      "name": "pd_instance",
+      "value": "Deployment"
+    },
+    {
+      "name": "pd_app_id",
+      "value": "Instance ID"
+    },
+    {
+      "name": "pd_access",
+      "value": "Access URL"
+    },
+    {
+      "name": "pd_access_pending",
+      "value": "Issued by Platform when ready"
+    },
+    {
+      "name": "pd_mirror",
+      "value": "Image"
+    },
+    {
+      "name": "pd_mirror_unknown",
+      "value": "Platform default image"
+    },
+    {
+      "name": "pd_mirror_unsupported_title",
+      "value": "This image is not supported by Mobile"
+    },
+    {
+      "name": "pd_mirror_detected",
+      "value": "Detected "
+    },
+    {
+      "name": "pd_log_title",
+      "value": "Deploy logs"
+    },
+    {
+      "name": "pd_live",
+      "value": "LIVE"
+    },
+    {
+      "name": "pd_log_empty",
+      "value": "Waiting for Platform deploy logs…"
+    },
+    {
+      "name": "pd_deploy_now",
+      "value": "Deploy my QwenPaw"
+    },
+    {
+      "name": "pd_restart",
+      "value": "Restart QwenPaw"
+    },
+    {
+      "name": "pd_restarting",
+      "value": "Restarting QwenPaw"
+    },
+    {
+      "name": "pd_reset_pair",
+      "value": "Reset pairing (restarts once)"
+    },
+    {
+      "name": "pd_recheck",
+      "value": "Check status again"
+    },
+    {
+      "name": "pd_open_console",
+      "value": "Open Platform console"
+    },
+    {
+      "name": "pd_switch_account",
+      "value": "Switch Platform account"
+    },
+    {
+      "name": "pd_switch_stable",
+      "value": "Switch to Stable (recommended)"
+    },
+    {
+      "name": "pd_switch_beta",
+      "value": "Switch to Beta"
+    },
+    {
+      "name": "pd_switching_stable",
+      "value": "Switching to QwenPaw Stable"
+    },
+    {
+      "name": "pd_switching_beta",
+      "value": "Switching to QwenPaw Beta"
+    },
+    {
+      "name": "pd_login_required",
+      "value": "Sign in to AgentScope Platform to create and manage a cloud QwenPaw."
+    },
+    {
+      "name": "pd_login_action",
+      "value": "Sign in to Platform"
+    },
+    {
+      "name": "pd_footer",
+      "value": "The Platform account is independent of QwenPaw pairing; leaving this page does not sign you out."
+    },
+    {
+      "name": "pd_confirm_restart_title",
+      "value": "Restart QwenPaw?"
+    },
+    {
+      "name": "pd_confirm_restart_msg",
+      "value": "Platform will rebuild the runtime service but keep this QwenPaw's chats, settings and agent workspace."
+    },
+    {
+      "name": "pd_confirm_restart_action",
+      "value": "Restart"
+    },
+    {
+      "name": "pd_confirm_reset_title",
+      "value": "Finish secure pairing?"
+    },
+    {
+      "name": "pd_confirm_reset_msg",
+      "value": "QwenPaw will restart once to finish secure pairing. Chats, settings and the agent workspace are kept."
+    },
+    {
+      "name": "pd_confirm_reset_action",
+      "value": "Continue and restart"
+    },
+    {
+      "name": "pd_confirm_switch_stable_title",
+      "value": "Switch to QwenPaw Stable?"
+    },
+    {
+      "name": "pd_confirm_switch_beta_title",
+      "value": "Switch to QwenPaw Beta?"
+    },
+    {
+      "name": "pd_confirm_switch_msg",
+      "value": "Platform will replace the running image and the service will be briefly unavailable. Different versions may use separate data directories."
+    },
+    {
+      "name": "pd_settings_copy",
+      "value": "Create and manage your cloud instance on Platform"
+    },
+    {
+      "name": "chats_search_placeholder",
+      "value": "Search chats"
+    },
+    {
+      "name": "chats_new",
+      "value": "New chat"
+    },
+    {
+      "name": "chats_create_failed",
+      "value": "Failed to create chat"
     },
     {
       "name": "notify_reason",
@@ -1535,6 +1843,10 @@
     {
       "name": "common_save",
       "value": "Save"
+    },
+    {
+      "name": "common_saving",
+      "value": "Saving"
     },
     {
       "name": "agents_create_title",
@@ -1883,6 +2195,22 @@
     {
       "name": "module_files_downloaded",
       "value": "Saved to the selected location"
+    },
+    {
+      "name": "module_files_opening",
+      "value": "Opening…"
+    },
+    {
+      "name": "module_files_no_preview",
+      "value": "Preview is not supported for this format — saving locally instead"
+    },
+    {
+      "name": "module_files_save_as",
+      "value": "Save to…"
+    },
+    {
+      "name": "module_files_saved",
+      "value": "Saved"
     },
     {
       "name": "module_files_path_label",
@@ -2613,6 +2941,94 @@
       "value": "This QwenPaw does not support the extensions API"
     },
     {
+      "name": "module_ext_market",
+      "value": "Skill Marketplace"
+    },
+    {
+      "name": "module_ext_search",
+      "value": "Search"
+    },
+    {
+      "name": "module_ext_searching",
+      "value": "Searching"
+    },
+    {
+      "name": "module_ext_search_placeholder",
+      "value": "Search skills"
+    },
+    {
+      "name": "module_ext_search_failed",
+      "value": "Search failed"
+    },
+    {
+      "name": "module_ext_search_incomplete",
+      "value": "Search incomplete"
+    },
+    {
+      "name": "module_ext_search_empty",
+      "value": "No installable skills found"
+    },
+    {
+      "name": "module_ext_search_empty_hint",
+      "value": "Try another keyword, or install from an extension ZIP URL."
+    },
+    {
+      "name": "module_ext_install_action",
+      "value": "Install"
+    },
+    {
+      "name": "module_ext_install_running",
+      "value": "Installing"
+    },
+    {
+      "name": "module_ext_install_confirm",
+      "value": "Install to the current agent?"
+    },
+    {
+      "name": "module_ext_skill_installed",
+      "value": "Skill installed"
+    },
+    {
+      "name": "module_ext_install_timeout",
+      "value": "Skill install timed out; check Skills later"
+    },
+    {
+      "name": "module_ext_running",
+      "value": "Running"
+    },
+    {
+      "name": "module_ext_unloaded",
+      "value": "Not loaded"
+    },
+    {
+      "name": "module_ext_open",
+      "value": "Open"
+    },
+    {
+      "name": "module_ext_apps_empty_title",
+      "value": "No PawApp yet"
+    },
+    {
+      "name": "module_ext_apps_empty_subtitle",
+      "value": "App-type extensions show up here after install"
+    },
+    {
+      "name": "module_ext_uninstall_confirm",
+      "value": "Uninstall extension?"
+    },
+    {
+      "name": "module_ext_uninstall_action",
+      "value": "Uninstall"
+    },
+    {
+      "name": "module_ext_install_url",
+      "value": "Install from URL"
+    },
+    {
+      "name": "module_ext_unknown_author",
+      "value": "Unknown author"
+    },
+    {
       "name": "module_ext_group_plugins",
       "value": "Plugins"
     },
@@ -2715,6 +3131,1502 @@
     {
       "name": "module_hub_footer",
       "value": "Data comes from this QwenPaw Hub; when Hub is not enabled it shows \"unsupported\" instead of sample content."
+    },
+    {
+      "name": "chat_runtime_model",
+      "value": "Model"
+    },
+    {
+      "name": "chat_runtime_loop",
+      "value": "Loop"
+    },
+    {
+      "name": "chat_runtime_approval",
+      "value": "Approval"
+    },
+    {
+      "name": "chat_runtime_pick_model",
+      "value": "Pick model"
+    },
+    {
+      "name": "chat_runtime_switch_failed",
+      "value": "Switch failed"
+    },
+    {
+      "name": "chat_msg_copy",
+      "value": "Copy"
+    },
+    {
+      "name": "chat_msg_select",
+      "value": "Select text"
+    },
+    {
+      "name": "chat_select_hint",
+      "value": "Long-press and drag to select"
+    },
+    {
+      "name": "chat_msg_copied",
+      "value": "Copied"
+    },
+    {
+      "name": "chat_msg_copy_failed",
+      "value": "Copy failed"
+    },
+    {
+      "name": "ws_platform",
+      "value": "Platform Cloud"
+    },
+    {
+      "name": "ws_local",
+      "value": "Local / Private"
+    },
+    {
+      "name": "ws_switch_title",
+      "value": "Switch QwenPaw"
+    },
+    {
+      "name": "ws_switch_copy",
+      "value": "Switching keeps your other connections signed in"
+    },
+    {
+      "name": "ws_add",
+      "value": "Pair another QwenPaw"
+    },
+    {
+      "name": "ws_add_copy",
+      "value": "Private deployment or Platform Cloud"
+    },
+    {
+      "name": "ws_unpair",
+      "value": "Unpair"
+    },
+    {
+      "name": "ws_unpaired",
+      "value": " unpaired"
+    },
+    {
+      "name": "ws_switch_failed",
+      "value": "Switch failed; the current QwenPaw stays connected"
+    },
+    {
+      "name": "ws_unpair_failed",
+      "value": "Unpair failed, try again"
+    },
+    {
+      "name": "pawapp_subtitle",
+      "value": "QwenPaw App"
+    },
+    {
+      "name": "pawapp_hint",
+      "value": "This page is provided by an extension installed on the current QwenPaw."
+    },
+    {
+      "name": "pawapp_loading",
+      "value": "Opening App…"
+    },
+    {
+      "name": "pawapp_no_connection",
+      "value": "No connection is available."
+    },
+    {
+      "name": "notify_title",
+      "value": "Notifications"
+    },
+    {
+      "name": "notify_hero_title",
+      "value": "Never miss a task away from the app"
+    },
+    {
+      "name": "notify_hero_sub",
+      "value": "Get notified when a run completes, needs input, needs approval, or fails."
+    },
+    {
+      "name": "notify_master",
+      "value": "Enable notifications"
+    },
+    {
+      "name": "notify_run_completed",
+      "value": "Run completed"
+    },
+    {
+      "name": "notify_input_required",
+      "value": "Input required"
+    },
+    {
+      "name": "notify_approval_required",
+      "value": "Approval required"
+    },
+    {
+      "name": "notify_run_failed",
+      "value": "Run failed"
+    },
+    {
+      "name": "notify_preview",
+      "value": "Notification preview"
+    },
+    {
+      "name": "notify_preview_full",
+      "value": "Full content"
+    },
+    {
+      "name": "notify_preview_title",
+      "value": "Title only"
+    },
+    {
+      "name": "notify_preview_hidden",
+      "value": "Hide content"
+    },
+    {
+      "name": "notify_scope",
+      "value": "Preferences are stored per connection and agent."
+    },
+    {
+      "name": "notify_privacy",
+      "value": "Preferences stay on this device; the push channel is configured on the host."
+    },
+    {
+      "name": "community_sort_recommended",
+      "value": "Recommended"
+    },
+    {
+      "name": "community_sort_latest",
+      "value": "Latest"
+    },
+    {
+      "name": "community_all",
+      "value": "All"
+    },
+    {
+      "name": "community_publish",
+      "value": "Post"
+    },
+    {
+      "name": "community_loading",
+      "value": "Loading Platform Community"
+    },
+    {
+      "name": "community_unavailable",
+      "value": "Community is unavailable"
+    },
+    {
+      "name": "community_reload",
+      "value": "Reload"
+    },
+    {
+      "name": "community_empty_title",
+      "value": "No posts in this category"
+    },
+    {
+      "name": "community_empty_copy",
+      "value": "Try another category or publish the first post."
+    },
+    {
+      "name": "community_share",
+      "value": "Share"
+    },
+    {
+      "name": "community_featured",
+      "value": "Featured"
+    },
+    {
+      "name": "community_user",
+      "value": "Community user"
+    },
+    {
+      "name": "community_qa_solved",
+      "value": "Solved"
+    },
+    {
+      "name": "community_qa_open",
+      "value": "Open"
+    },
+    {
+      "name": "community_login_needed_title",
+      "value": "Sign in to like"
+    },
+    {
+      "name": "community_login_needed_copy",
+      "value": "Sign in to AgentScope Platform so likes and comments sync to the community."
+    },
+    {
+      "name": "community_login_action",
+      "value": "Sign in"
+    },
+    {
+      "name": "community_like_failed",
+      "value": "Like failed, please try again later"
+    },
+    {
+      "name": "community_like_failed_title",
+      "value": "Like failed"
+    },
+    {
+      "name": "community_detail_title",
+      "value": "Post"
+    },
+    {
+      "name": "community_loading_article",
+      "value": "Loading post and comments"
+    },
+    {
+      "name": "community_article_error_title",
+      "value": "Post is unavailable"
+    },
+    {
+      "name": "community_article_error_copy",
+      "value": "The post does not exist or was removed"
+    },
+    {
+      "name": "community_all_comments",
+      "value": "Comments"
+    },
+    {
+      "name": "community_no_comments",
+      "value": "No comments yet"
+    },
+    {
+      "name": "community_comment_placeholder",
+      "value": "Be kind and constructive"
+    },
+    {
+      "name": "community_accepted",
+      "value": "Accepted"
+    },
+    {
+      "name": "community_views_suffix",
+      "value": " views"
+    },
+    {
+      "name": "community_likes_suffix",
+      "value": " likes"
+    },
+    {
+      "name": "community_comments_suffix",
+      "value": " comments"
+    },
+    {
+      "name": "community_likes_unit",
+      "value": " likes"
+    },
+    {
+      "name": "community_login_required_title",
+      "value": "Sign in to AgentScope Platform"
+    },
+    {
+      "name": "community_login_required_copy",
+      "value": "Likes and comments sync to the online community. Please sign in first."
+    },
+    {
+      "name": "community_comment_failed",
+      "value": "Comment failed"
+    },
+    {
+      "name": "community_compose_title",
+      "value": "Create post"
+    },
+    {
+      "name": "community_publishing",
+      "value": "Publishing"
+    },
+    {
+      "name": "community_published",
+      "value": "Published"
+    },
+    {
+      "name": "community_field_type",
+      "value": "Article type"
+    },
+    {
+      "name": "community_title_placeholder",
+      "value": "Title"
+    },
+    {
+      "name": "community_body_placeholder",
+      "value": "Share your QwenPaw practice, tutorials, cases or ideas…"
+    },
+    {
+      "name": "community_field_tags",
+      "value": "Tags"
+    },
+    {
+      "name": "community_tags_placeholder",
+      "value": "Separate with spaces or commas, up to 5"
+    },
+    {
+      "name": "community_privacy_note",
+      "value": "Only the title, body and tags you enter are published. Sessions, memory, keys, environment variables and local paths are never read or attached."
+    },
+    {
+      "name": "community_publish_confirm_title",
+      "value": "Publish to the public community?"
+    },
+    {
+      "name": "community_publish_confirm_copy",
+      "value": "This post will be published to AgentScope Platform immediately and visible to all community users."
+    },
+    {
+      "name": "community_publish_confirm_action",
+      "value": "Publish"
+    },
+    {
+      "name": "community_need_title",
+      "value": "Please enter a title"
+    },
+    {
+      "name": "community_need_body",
+      "value": "Please enter the body"
+    },
+    {
+      "name": "community_publish_failed",
+      "value": "Publish failed"
+    },
+    {
+      "name": "community_type_work_share",
+      "value": "Dev share"
+    },
+    {
+      "name": "community_type_app_case",
+      "value": "Case study"
+    },
+    {
+      "name": "community_type_tutorial",
+      "value": "Tutorial"
+    },
+    {
+      "name": "community_type_discussion",
+      "value": "Discussion"
+    },
+    {
+      "name": "platform_oauth_title",
+      "value": "Platform sign-in"
+    },
+    {
+      "name": "platform_oauth_copy",
+      "value": "Sign in to AgentScope Platform with your GitHub account. Authorization completes in the in-app secure view, with no browser switch."
+    },
+    {
+      "name": "platform_oauth_loading",
+      "value": "Opening Platform authorization…"
+    },
+    {
+      "name": "platform_oauth_returning",
+      "value": "Finishing sign-in…"
+    },
+    {
+      "name": "platform_oauth_failed",
+      "value": "Authorization incomplete"
+    },
+    {
+      "name": "platform_oauth_retry",
+      "value": "Authorize again"
+    },
+    {
+      "name": "platform_login_github",
+      "value": "Continue with GitHub"
+    },
+    {
+      "name": "platform_login_github_hint",
+      "value": "Secure authorization completes in the app, then continues automatically."
+    },
+    {
+      "name": "platform_login_title",
+      "value": "Platform sign-in"
+    },
+    {
+      "name": "platform_login_heading",
+      "value": "Connect to AgentScope Community"
+    },
+    {
+      "name": "platform_login_copy",
+      "value": "Sign in to like, comment and publish in the app. This is independent of QwenPaw pairing."
+    },
+    {
+      "name": "platform_login_segment_login",
+      "value": "Sign in"
+    },
+    {
+      "name": "platform_login_segment_register",
+      "value": "Register"
+    },
+    {
+      "name": "platform_login_account",
+      "value": "Account"
+    },
+    {
+      "name": "platform_login_account_hint",
+      "value": "Email or account"
+    },
+    {
+      "name": "platform_login_account_hint_register",
+      "value": "Used to receive the code"
+    },
+    {
+      "name": "platform_login_code",
+      "value": "Code"
+    },
+    {
+      "name": "platform_login_code_placeholder",
+      "value": "Email code"
+    },
+    {
+      "name": "platform_login_send_code",
+      "value": "Send code"
+    },
+    {
+      "name": "platform_login_code_sent",
+      "value": "Code sent"
+    },
+    {
+      "name": "platform_login_password",
+      "value": "Password"
+    },
+    {
+      "name": "platform_login_password_hint",
+      "value": "Enter your password"
+    },
+    {
+      "name": "platform_login_confirm_password",
+      "value": "Confirm password"
+    },
+    {
+      "name": "platform_login_confirm_hint",
+      "value": "Enter the password again"
+    },
+    {
+      "name": "platform_login_submit",
+      "value": "Sign in to Community"
+    },
+    {
+      "name": "platform_login_submit_register",
+      "value": "Register and continue"
+    },
+    {
+      "name": "platform_login_submitting",
+      "value": "Working…"
+    },
+    {
+      "name": "platform_login_security_note",
+      "value": "The sign-in token stays on this device and is refreshed with the Platform refresh token when it expires."
+    },
+    {
+      "name": "platform_login_password_mismatch",
+      "value": "The two passwords do not match"
+    },
+    {
+      "name": "platform_login_registered",
+      "value": "Registered, please sign in"
+    },
+    {
+      "name": "platform_login_need_account",
+      "value": "Enter your account"
+    },
+    {
+      "name": "platform_login_need_password",
+      "value": "Enter your password"
+    },
+    {
+      "name": "platform_login_need_code",
+      "value": "Enter the code"
+    },
+    {
+      "name": "platform_login_ok",
+      "value": "Signed in"
+    },
+    {
+      "name": "relay_group_title",
+      "value": "Platform remote access"
+    },
+    {
+      "name": "relay_row_connected",
+      "value": "Platform connected"
+    },
+    {
+      "name": "relay_row_disconnected",
+      "value": "Connect Platform"
+    },
+    {
+      "name": "relay_row_sub_on",
+      "value": "This QwenPaw is reachable through Platform"
+    },
+    {
+      "name": "relay_row_sub_off",
+      "value": "Use the current Platform account to enable remote access"
+    },
+    {
+      "name": "relay_row_sub_login",
+      "value": "Sign in to Platform to enable remote access"
+    },
+    {
+      "name": "relay_trailing_on",
+      "value": "On"
+    },
+    {
+      "name": "relay_trailing_off",
+      "value": "Off"
+    },
+    {
+      "name": "relay_need_hub",
+      "value": "This QwenPaw does not support Platform remote access"
+    },
+    {
+      "name": "relay_login_required",
+      "value": "Sign in to AgentScope Platform first"
+    },
+    {
+      "name": "relay_auth_ok_title",
+      "value": "Platform remote access is on"
+    },
+    {
+      "name": "relay_auth_ok_copy",
+      "value": "This QwenPaw is bound to the current Platform account and can issue a secure relay pairing code."
+    },
+    {
+      "name": "relay_auth_fail_title",
+      "value": "Could not connect to Platform"
+    },
+    {
+      "name": "relay_nodes_row",
+      "value": "Self-hosted connections"
+    },
+    {
+      "name": "relay_nodes_row_sub",
+      "value": "Quota, unbinding and cleaning up offline connections"
+    },
+    {
+      "name": "relay_nodes_title",
+      "value": "Self-hosted connections"
+    },
+    {
+      "name": "relay_quota_prefix",
+      "value": "Used "
+    },
+    {
+      "name": "relay_quota_suffix",
+      "value": "; cloud QwenPaw instances are not counted here"
+    },
+    {
+      "name": "relay_loading",
+      "value": "Loading connections…"
+    },
+    {
+      "name": "relay_loading_copy",
+      "value": "Asking Platform for the self-hosted connections bound to this account."
+    },
+    {
+      "name": "relay_error_title",
+      "value": "Connections are unavailable"
+    },
+    {
+      "name": "relay_empty_title",
+      "value": "No self-hosted connections yet"
+    },
+    {
+      "name": "relay_empty_copy",
+      "value": "Sign in to the same Platform account inside QwenPaw to bind one."
+    },
+    {
+      "name": "relay_online",
+      "value": "Online"
+    },
+    {
+      "name": "relay_offline",
+      "value": "Offline"
+    },
+    {
+      "name": "relay_never_seen",
+      "value": "never connected"
+    },
+    {
+      "name": "relay_current",
+      "value": "Current"
+    },
+    {
+      "name": "relay_revoke_title",
+      "value": "Unbind"
+    },
+    {
+      "name": "relay_revoke_copy",
+      "value": "Platform relay access stops; local chats and settings are kept."
+    },
+    {
+      "name": "relay_revoke_action",
+      "value": "Unbind"
+    },
+    {
+      "name": "relay_reauthorize_copy",
+      "value": "This QwenPaw is already bound. Re-authorizing updates it to the Platform account signed in now."
+    },
+    {
+      "name": "relay_reauthorize_action",
+      "value": "Re-authorize"
+    },
+    {
+      "name": "chat_media_saved",
+      "value": "Saved to gallery"
+    },
+    {
+      "name": "chat_media_save_failed",
+      "value": "Save failed"
+    },
+    {
+      "name": "chat_media_share",
+      "value": "Share"
+    },
+    {
+      "name": "chat_media_share_failed",
+      "value": "Share failed"
+    },
+    {
+      "name": "chat_process_thinking_label",
+      "value": "Thinking & planning"
+    },
+    {
+      "name": "chat_process_mid",
+      "value": "Intermediate results"
+    },
+    {
+      "name": "chat_process_call",
+      "value": "Call"
+    },
+    {
+      "name": "chat_process_done",
+      "value": "Done"
+    },
+    {
+      "name": "chat_process_failed",
+      "value": "Failed"
+    },
+    {
+      "name": "chat_process_running",
+      "value": "Running"
+    },
+    {
+      "name": "chat_tool_input_label",
+      "value": "Arguments"
+    },
+    {
+      "name": "chat_tool_output_label",
+      "value": "Result"
+    },
+    {
+      "name": "chat_tool_view_full",
+      "value": "View full result"
+    },
+    {
+      "name": "chat_tool_collapse",
+      "value": "Collapse details"
+    },
+    {
+      "name": "chat_tool_default",
+      "value": "Tool call"
+    },
+    {
+      "name": "chat_answer_label",
+      "value": "Final reply"
+    },
+    {
+      "name": "chat_answer_pending",
+      "value": "Composing reply…"
+    },
+    {
+      "name": "chat_answer_expand",
+      "value": "Show more"
+    },
+    {
+      "name": "chat_answer_collapse",
+      "value": "Show less"
+    },
+    {
+      "name": "chat_answer_failed",
+      "value": "Send failed"
+    },
+    {
+      "name": "chat_process_summary_think",
+      "value": "Thought"
+    },
+    {
+      "name": "chat_process_summary_tools",
+      "value": "%d tool steps"
+    },
+    {
+      "name": "chat_process_summary_mid",
+      "value": "%d intermediate results"
+    },
+    {
+      "name": "common_edit",
+      "value": "Edit"
+    },
+    {
+      "name": "scan_manual_enter",
+      "value": "Enter address manually"
+    },
+    {
+      "name": "scan_manual_back",
+      "value": "Back to scan"
+    },
+    {
+      "name": "scan_manual_title",
+      "value": "Add connection manually"
+    },
+    {
+      "name": "scan_manual_copy",
+      "value": "IPv4 / IPv6 / hostname, with optional port and http(s); pairing code may be left empty"
+    },
+    {
+      "name": "scan_manual_addr_ph",
+      "value": "e.g. 192.0.2.10:8088 or https://example.com"
+    },
+    {
+      "name": "scan_manual_ticket_ph",
+      "value": "Pairing code (optional)"
+    },
+    {
+      "name": "scan_manual_connect",
+      "value": "Connect"
+    },
+    {
+      "name": "module_files_open_external",
+      "value": "Open in another app"
+    },
+    {
+      "name": "module_files_open_external_failed",
+      "value": "No app can open this file"
+    },
+    {
+      "name": "scan_choose_title",
+      "value": "Add connection"
+    },
+    {
+      "name": "scan_choose_copy",
+      "value": "Scan a pairing code, or enter an address manually (IPv4 / IPv6 / hostname, with optional port and http(s))"
+    },
+    {
+      "name": "scan_choose_scan",
+      "value": "Scan pairing code"
+    },
+    {
+      "name": "chat_approval_strict",
+      "value": "Strict"
+    },
+    {
+      "name": "chat_approval_smart",
+      "value": "Smart"
+    },
+    {
+      "name": "chat_approval_auto",
+      "value": "Auto"
+    },
+    {
+      "name": "chat_approval_off",
+      "value": "Off"
+    },
+    {
+      "name": "chat_loop_running",
+      "value": "Running"
+    },
+    {
+      "name": "chat_loop_paused",
+      "value": "Paused"
+    },
+    {
+      "name": "chat_runtime_loop_title",
+      "value": "Run mode"
+    },
+    {
+      "name": "chat_runtime_approval_title",
+      "value": "Approval level"
+    },
+    {
+      "name": "chat_runtime_follow_agent",
+      "value": "Follow Agent"
+    },
+    {
+      "name": "chat_runtime_agent_default",
+      "value": "Agent default"
+    },
+    {
+      "name": "err_token_expired_chats",
+      "value": "Session expired (HTTP %d). Go back to the Chats tab and reconnect."
+    },
+    {
+      "name": "err_token_expired",
+      "value": "Session expired (HTTP %d). Please reconnect."
+    },
+    {
+      "name": "err_action_failed",
+      "value": "%s failed (HTTP %d)."
+    },
+    {
+      "name": "err_load_agents",
+      "value": "Failed to load agents (HTTP %d)."
+    },
+    {
+      "name": "err_load_chats",
+      "value": "Failed to load chats (HTTP %d)."
+    },
+    {
+      "name": "err_load_chat",
+      "value": "Failed to open the chat (HTTP %d)."
+    },
+    {
+      "name": "err_stop_failed",
+      "value": "Failed to stop (HTTP %d)."
+    },
+    {
+      "name": "err_upload_failed",
+      "value": "Attachment upload failed (HTTP %d)."
+    },
+    {
+      "name": "err_upload_no_url",
+      "value": "Upload failed: the server returned no file URL."
+    },
+    {
+      "name": "err_load_approvals",
+      "value": "Failed to load approvals (HTTP %d)."
+    },
+    {
+      "name": "err_approve_failed",
+      "value": "Approving failed (HTTP %d)."
+    },
+    {
+      "name": "err_deny_failed",
+      "value": "Rejecting failed (HTTP %d)."
+    },
+    {
+      "name": "common_file",
+      "value": "File"
+    },
+    {
+      "name": "approvals_tool_call",
+      "value": "Tool call"
+    },
+    {
+      "name": "sse_model_call_failed",
+      "value": "Model call failed"
+    },
+    {
+      "name": "time_just_now",
+      "value": "Just now"
+    },
+    {
+      "name": "time_minutes_ago",
+      "value": "%d min ago"
+    },
+    {
+      "name": "time_hours_ago",
+      "value": "%d h ago"
+    },
+    {
+      "name": "date_month_day",
+      "value": "%d/%d"
+    },
+    {
+      "name": "agent_action_delete",
+      "value": "Delete agent"
+    },
+    {
+      "name": "agent_action_pin",
+      "value": "Pin agent"
+    },
+    {
+      "name": "agent_action_toggle",
+      "value": "Toggle agent"
+    },
+    {
+      "name": "agent_action_create",
+      "value": "Create agent"
+    },
+    {
+      "name": "agent_action_duplicate",
+      "value": "Duplicate agent"
+    },
+    {
+      "name": "chat_group_create",
+      "value": "Create group"
+    },
+    {
+      "name": "chat_create",
+      "value": "New chat"
+    },
+    {
+      "name": "chat_rename",
+      "value": "Rename chat"
+    },
+    {
+      "name": "chat_move",
+      "value": "Move chat"
+    },
+    {
+      "name": "chat_pin",
+      "value": "Pin chat"
+    },
+    {
+      "name": "chat_archive",
+      "value": "Archive chat"
+    },
+    {
+      "name": "chat_unarchive",
+      "value": "Unarchive chat"
+    },
+    {
+      "name": "chat_delete",
+      "value": "Delete chat"
+    },
+    {
+      "name": "pairing_err_no_address",
+      "value": "Enter the QwenPaw address."
+    },
+    {
+      "name": "pairing_err_bad_format",
+      "value": "Invalid QwenPaw address format."
+    },
+    {
+      "name": "pairing_err_scheme",
+      "value": "The QwenPaw address must use HTTP or HTTPS."
+    },
+    {
+      "name": "pairing_err_credentials",
+      "value": "The QwenPaw address must not contain credentials."
+    },
+    {
+      "name": "pairing_err_query",
+      "value": "The QwenPaw address must not contain query parameters."
+    },
+    {
+      "name": "pairing_err_no_host",
+      "value": "The QwenPaw address is missing a host."
+    },
+    {
+      "name": "pairing_err_relay_unsupported",
+      "value": "Relay pairing is not supported yet (LAN direct only)."
+    },
+    {
+      "name": "pairing_err_not_code",
+      "value": "This is not a QwenPaw pairing code."
+    },
+    {
+      "name": "pairing_err_code_invalid",
+      "value": "This QwenPaw pairing code is invalid or expired."
+    },
+    {
+      "name": "pairing_err_code_short",
+      "value": "Pairing code is too short (at least 32 chars). Leave it empty for direct connect if accounts are off."
+    },
+    {
+      "name": "conn_err_non_json",
+      "value": "The server returned non-JSON content."
+    },
+    {
+      "name": "conn_err_timeout_localhost",
+      "value": "Connection timed out. On a phone 127.0.0.1 points to the phone itself; on a real device enter the computer LAN IP."
+    },
+    {
+      "name": "conn_err_timeout",
+      "value": "Connection timed out. Make sure the phone and QwenPaw share a network, the address/port are correct, and the server runs with --host 0.0.0.0."
+    },
+    {
+      "name": "conn_err_network",
+      "value": "Network error (code %s). Make sure the phone and QwenPaw share a network, the address/port are correct, and the server runs with --host 0.0.0.0."
+    },
+    {
+      "name": "conn_err_unreachable",
+      "value": "Cannot reach %s. Make sure the service is running and the address/port are correct."
+    },
+    {
+      "name": "conn_err_failed",
+      "value": "Connection failed: %s"
+    },
+    {
+      "name": "conn_err_http",
+      "value": "Cannot access the service (HTTP %d)."
+    },
+    {
+      "name": "conn_err_verify",
+      "value": "Token verification failed (HTTP %d). %s"
+    },
+    {
+      "name": "conn_err_redeem",
+      "value": "Pairing-code redemption failed (HTTP %d). Check that the code is unexpired and belongs to this address."
+    },
+    {
+      "name": "conn_err_no_ticket",
+      "value": "The server returned no valid session ticket."
+    },
+    {
+      "name": "conn_hint_code_invalid",
+      "value": "The pairing code may be invalid or expired."
+    },
+    {
+      "name": "conn_err_account_required",
+      "value": "This QwenPaw has account login enabled; enter the pairing code (QwenPaw workspace pairing page)."
+    },
+    {
+      "name": "conn_hint_maybe_expired",
+      "value": "The connection may have expired; please scan the pairing code again."
+    },
+    {
+      "name": "conn_err_account_required_again",
+      "value": "This QwenPaw has account login enabled; please scan the pairing code again."
+    },
+    {
+      "name": "relay_err_unexpected",
+      "value": "Unexpected content in remote-access status."
+    },
+    {
+      "name": "relay_err_unsupported",
+      "value": "This QwenPaw does not support Platform remote access."
+    },
+    {
+      "name": "relay_err_load",
+      "value": "Failed to load remote-access status (HTTP %d)."
+    },
+    {
+      "name": "relay_err_connect",
+      "value": "Failed to connect to Platform (HTTP %d)."
+    },
+    {
+      "name": "platform_err_request",
+      "value": "Platform request failed (%s)"
+    },
+    {
+      "name": "platform_err_login_no_cred",
+      "value": "Platform login returned no valid credentials"
+    },
+    {
+      "name": "platform_err_refresh",
+      "value": "Platform session refresh failed"
+    },
+    {
+      "name": "platform_err_login_first",
+      "value": "Please sign in to AgentScope Platform first"
+    },
+    {
+      "name": "platform_err_community",
+      "value": "Platform community is temporarily unavailable (%s)"
+    },
+    {
+      "name": "platform_err_state_check",
+      "value": "Platform login state check failed; please sign in again"
+    },
+    {
+      "name": "platform_err_no_code",
+      "value": "Platform login returned no authorization code"
+    },
+    {
+      "name": "deploy_err_no_appid",
+      "value": "Platform did not return an appId after creating the deployment"
+    },
+    {
+      "name": "deploy_status_idle",
+      "value": "Not deployed yet"
+    },
+    {
+      "name": "deploy_status_idle_desc",
+      "value": "Signed in — you can create your cloud QwenPaw now."
+    },
+    {
+      "name": "deploy_status_creating",
+      "value": "Creating"
+    },
+    {
+      "name": "deploy_status_creating_desc",
+      "value": "Preparing your cloud QwenPaw."
+    },
+    {
+      "name": "deploy_status_deploying",
+      "value": "Deploying"
+    },
+    {
+      "name": "deploy_status_deploying_desc",
+      "value": "Loading services and persistent configuration."
+    },
+    {
+      "name": "deploy_status_in_progress",
+      "value": "Deployment in progress"
+    },
+    {
+      "name": "deploy_status_in_progress_desc",
+      "value": "Platform is processing the request; the app will retry automatically — no action needed."
+    },
+    {
+      "name": "deploy_status_starting",
+      "value": "Starting"
+    },
+    {
+      "name": "deploy_status_starting_desc",
+      "value": "The QwenPaw service is about to be ready."
+    },
+    {
+      "name": "deploy_status_restarting",
+      "value": "Restarting"
+    },
+    {
+      "name": "deploy_status_restarting_desc",
+      "value": "Restoring this QwenPaw; your work data is preserved."
+    },
+    {
+      "name": "deploy_status_switching",
+      "value": "Switching version"
+    },
+    {
+      "name": "deploy_status_switching_desc",
+      "value": "Platform is replacing the QwenPaw runtime image."
+    },
+    {
+      "name": "deploy_status_waking",
+      "value": "Waking up"
+    },
+    {
+      "name": "deploy_status_waking_desc",
+      "value": "Restoring your cloud QwenPaw."
+    },
+    {
+      "name": "deploy_status_recovering",
+      "value": "Recovering"
+    },
+    {
+      "name": "deploy_status_recovering_desc",
+      "value": "The QwenPaw start request has been submitted."
+    },
+    {
+      "name": "deploy_status_ready",
+      "value": "QwenPaw is ready"
+    },
+    {
+      "name": "deploy_status_ready_desc",
+      "value": "Completing secure pairing."
+    },
+    {
+      "name": "deploy_status_not_ready",
+      "value": "Cloud service not ready"
+    },
+    {
+      "name": "deploy_status_not_ready_desc",
+      "value": "The app stopped automatic actions and will not re-deploy or restart."
+    },
+    {
+      "name": "deploy_status_removed",
+      "value": "Deployment removed"
+    },
+    {
+      "name": "deploy_status_removed_desc",
+      "value": "You can create your QwenPaw again."
+    },
+    {
+      "name": "deploy_status_preparing",
+      "value": "Preparing"
+    },
+    {
+      "name": "deploy_status_preparing_desc",
+      "value": "Reading the Platform deployment status."
+    },
+    {
+      "name": "deploy_version_stable",
+      "value": "QwenPaw Stable"
+    },
+    {
+      "name": "deploy_version_unknown",
+      "value": "Unknown image"
+    },
+    {
+      "name": "deploy_msg_rate_limited",
+      "value": "Platform is busy; your session is kept. The app pauses requests and retries automatically."
+    },
+    {
+      "name": "deploy_msg_github_required",
+      "value": "Bind GitHub to your Platform account before deploying. Come back here to retry after binding."
+    },
+    {
+      "name": "deploy_msg_not_eligible",
+      "value": "This Platform account is not yet eligible to deploy QwenPaw; apply for eligibility on Platform first."
+    },
+    {
+      "name": "deploy_msg_forbidden",
+      "value": "This Platform account has limited deployment permission; check or appeal on Platform."
+    },
+    {
+      "name": "deploy_msg_pending_review",
+      "value": "Platform is reviewing your application; you can continue deploying here once approved."
+    },
+    {
+      "name": "deploy_msg_unavailable",
+      "value": "Platform could not open this QwenPaw right now. Your session is kept and the app will not re-deploy; check again later."
+    },
+    {
+      "name": "deploy_msg_failed",
+      "value": "The Platform deployment request failed; please retry later."
+    },
+    {
+      "name": "wb_mod_files_title",
+      "value": "Files"
+    },
+    {
+      "name": "wb_mod_projects_git_title",
+      "value": "Coding Projects and Git"
+    },
+    {
+      "name": "wb_mod_agent_config_title",
+      "value": "Agent Config"
+    },
+    {
+      "name": "wb_mod_skills_title",
+      "value": "Skills"
+    },
+    {
+      "name": "wb_mod_skill_pool_title",
+      "value": "Skill Pool"
+    },
+    {
+      "name": "wb_mod_tools_title",
+      "value": "Tools"
+    },
+    {
+      "name": "wb_mod_mcp_acp_title",
+      "value": "MCP"
+    },
+    {
+      "name": "wb_mod_acp_title",
+      "value": "ACP"
+    },
+    {
+      "name": "wb_mod_checkpoints_title",
+      "value": "Checkpoints"
+    },
+    {
+      "name": "wb_mod_extensions_title",
+      "value": "Extensions and App Center"
+    },
+    {
+      "name": "wb_mod_channels_title",
+      "value": "Channels"
+    },
+    {
+      "name": "wb_mod_sessions_title",
+      "value": "Sessions"
+    },
+    {
+      "name": "wb_mod_automation_title",
+      "value": "Cron and Heartbeat"
+    },
+    {
+      "name": "wb_mod_hub_title",
+      "value": "QwenPaw Hub"
+    },
+    {
+      "name": "wb_mod_models_title",
+      "value": "Models and Providers"
+    },
+    {
+      "name": "wb_mod_environments_title",
+      "value": "Environments and Credentials"
+    },
+    {
+      "name": "wb_mod_security_title",
+      "value": "Security"
+    },
+    {
+      "name": "wb_mod_offload_title",
+      "value": "Tool Offload"
+    },
+    {
+      "name": "wb_mod_voice_title",
+      "value": "Voice and Transcription"
+    },
+    {
+      "name": "wb_mod_debug_title",
+      "value": "Debug"
+    },
+    {
+      "name": "wb_mod_operations_title",
+      "value": "Backups and Stats"
+    },
+    {
+      "name": "wb_mod_files_subtitle",
+      "value": "Workspace files and artifacts"
+    },
+    {
+      "name": "wb_mod_projects_git_subtitle",
+      "value": "Project directory, branches and commits"
+    },
+    {
+      "name": "wb_mod_agent_config_subtitle",
+      "value": "The current agent model and behavior"
+    },
+    {
+      "name": "wb_mod_skills_subtitle",
+      "value": "Install, enable and configure skills"
+    },
+    {
+      "name": "wb_mod_skill_pool_subtitle",
+      "value": "Reuse skills across agents"
+    },
+    {
+      "name": "wb_mod_tools_subtitle",
+      "value": "Built-in tools and permissions"
+    },
+    {
+      "name": "wb_mod_mcp_acp_subtitle",
+      "value": "External tools and services"
+    },
+    {
+      "name": "wb_mod_acp_subtitle",
+      "value": "External agent runtime protocol"
+    },
+    {
+      "name": "wb_mod_checkpoints_subtitle",
+      "value": "Agent workspace versions"
+    },
+    {
+      "name": "wb_mod_extensions_subtitle",
+      "value": "Marketplace, Plugins and PawApps"
+    },
+    {
+      "name": "wb_mod_channels_subtitle",
+      "value": "Messaging channels and access control"
+    },
+    {
+      "name": "wb_mod_sessions_subtitle",
+      "value": "All chats and runtime status"
+    },
+    {
+      "name": "wb_mod_automation_subtitle",
+      "value": "Scheduled jobs and active wakeups"
+    },
+    {
+      "name": "wb_mod_hub_subtitle",
+      "value": "Identity, Runtime and multi-user operation"
+    },
+    {
+      "name": "wb_mod_models_subtitle",
+      "value": "Model providers and defaults"
+    },
+    {
+      "name": "wb_mod_environments_subtitle",
+      "value": "Environment variables and secrets"
+    },
+    {
+      "name": "wb_mod_security_subtitle",
+      "value": "Sandbox, guards and scanning"
+    },
+    {
+      "name": "wb_mod_offload_subtitle",
+      "value": "Foreground/background policy for long tasks"
+    },
+    {
+      "name": "wb_mod_voice_subtitle",
+      "value": "Audio processing and Whisper"
+    },
+    {
+      "name": "wb_mod_debug_subtitle",
+      "value": "Backend logs and diagnostics"
+    },
+    {
+      "name": "wb_mod_operations_subtitle",
+      "value": "Backups, Token Usage and status"
+    },
+    {
+      "name": "wb_cat_agent_workspace_title",
+      "value": "Agents and Workspaces"
+    },
+    {
+      "name": "wb_cat_conn_automation_title",
+      "value": "Connectivity and Automation"
+    },
+    {
+      "name": "wb_cat_run_security_title",
+      "value": "Runtime and Security"
+    },
+    {
+      "name": "wb_cat_data_diagnostics_title",
+      "value": "Data and Diagnostics"
+    },
+    {
+      "name": "wb_cat_agent_workspace_subtitle",
+      "value": "Agents, chats, files and projects"
+    },
+    {
+      "name": "wb_cat_conn_automation_subtitle",
+      "value": "Models, channels, tools and scheduled jobs"
+    },
+    {
+      "name": "wb_cat_run_security_subtitle",
+      "value": "Skills, permissions, runtime and extensions"
+    },
+    {
+      "name": "wb_cat_data_diagnostics_subtitle",
+      "value": "Versions, logs, usage and recovery"
+    },
+    {
+      "name": "module_auto_hb_every_hint",
+      "value": "6h or 30m"
+    },
+    {
+      "name": "channel_dingtalk",
+      "value": "DingTalk"
+    },
+    {
+      "name": "channel_feishu",
+      "value": "Feishu"
+    },
+    {
+      "name": "channel_wechat",
+      "value": "WeChat"
+    },
+    {
+      "name": "channel_wecom",
+      "value": "WeCom"
+    },
+    {
+      "name": "self_test_01",
+      "value": "1. data frame roundtrip (PR vector)"
+    },
+    {
+      "name": "self_test_02",
+      "value": "2. session_event without event_id rejected (PR vector)"
+    },
+    {
+      "name": "self_test_03",
+      "value": "3. open operation allowlist (PR vector)"
+    },
+    {
+      "name": "self_test_04",
+      "value": "4. truncated input rejected (PR vector)"
+    },
+    {
+      "name": "self_test_05",
+      "value": "5. canonical hello byte-exact"
+    },
+    {
+      "name": "self_test_06",
+      "value": "6. canonical pong byte-exact"
+    },
+    {
+      "name": "self_test_07",
+      "value": "7. canonical data byte-exact"
+    },
+    {
+      "name": "self_test_08",
+      "value": "8. Address: bare host:port gets http"
+    },
+    {
+      "name": "self_test_09",
+      "value": "9. Address: domain + https + port"
+    },
+    {
+      "name": "self_test_10",
+      "value": "10. Address: IPv6 keeps brackets"
+    },
+    {
+      "name": "self_test_11",
+      "value": "11. Address: hostOf extracts host (IPv6 with port)"
+    },
+    {
+      "name": "self_test_12",
+      "value": "12. Address: credentials rejected"
+    },
+    {
+      "name": "chat_placeholder_hint",
+      "value": "Pick a conversation to start"
     }
   ]
 }

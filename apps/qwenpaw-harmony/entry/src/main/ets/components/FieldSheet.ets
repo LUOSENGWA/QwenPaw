@@ -9,8 +9,10 @@
  */
 
 import { common } from '@kit.AbilityKit';
+import { uiMaterial } from '@kit.ArkUI';
 import { UiTokens } from '../theme/UiTokens';
 import { isDarkMode, accentColor } from '../theme/Accent';
+import { menuOptions } from '../theme/MenuMaterial';
 
 export class FieldDef {
   name: string = '';
@@ -57,6 +59,12 @@ export struct FieldSheet {
   @State items: FieldItem[] = [];
   @State saving: boolean = false;
   private dark: boolean = false;
+  // 面板操作键材质（THIN；interactive = 交互形变、lightEffect = 点光源，替代默认按压态）
+  private sheetBtnMaterial: SystemUiMaterial = new uiMaterial.ImmersiveMaterial({
+    style: uiMaterial.ImmersiveStyle.THIN,
+    interactive: true,
+    lightEffect: {}
+  });
 
   aboutToAppear(): void {
     const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -220,9 +228,9 @@ export struct FieldSheet {
             .fontColor(it.text.length > 0
               ? $r('app.color.text_primary_strong') : $r('app.color.text_tertiary'))
             .layoutWeight(1)
-          Text('›')
-            .fontSize(20)
-            .fontColor($r('app.color.text_tertiary'))
+          Image($r('app.media.chevron_right'))
+            .width(16).height(16)
+            .fillColor($r('app.color.text_tertiary'))
         }
         .width('100%')
         .constraintSize({ minHeight: 50 })
@@ -230,7 +238,7 @@ export struct FieldSheet {
         .borderRadius(UiTokens.cardRadius)
         // 卡片底色统一走 sheet_card_bg（灰色 token），与半模态玻璃背板拉开层次
         .backgroundColor($r('app.color.sheet_card_bg'))
-        .bindMenu(this.optionsOf(d))
+        .bindMenu(this.optionsOf(d), menuOptions())
       } else if (d.type === 'textarea') {
         TextArea({ text: it.text, placeholder: d.placeholder })
           .width('100%')
@@ -290,26 +298,43 @@ export struct FieldSheet {
       .align(Alignment.Top)
       .scrollBar(BarState.Auto)
       Row() {
-        Button($r('app.string.common_cancel'))
-          .layoutWeight(1)
-          .height(46)
-          .backgroundColor($r('app.color.card_bg'))
-          .fontColor($r('app.color.btn_gray_text'))
-          .stateEffect(false)
-          .onClick((): void => {
+        // 取消：Toggle 外壳 + 沉浸材质（内容区 Button 直接挂材质是空转；Toggle 在豁免名单内）
+        Toggle({ type: ToggleType.Button, isOn: false }) {
+          Text($r('app.string.common_cancel'))
+            .fontSize(UiTokens.fsBody)
+            .fontColor($r('app.color.btn_gray_text'))
+        }
+        .layoutWeight(1)
+        .height(46)
+        .padding(0)
+        .backgroundColor(Color.Transparent)
+        .selectedColor(Color.Transparent)
+        .systemMaterial(this.sheetBtnMaterial)
+        .onChange((isOn: boolean): void => {
+          if (isOn) {
             this.onClose();
-          })
-        Button($r('app.string.common_save'))
-          .layoutWeight(1)
-          .height(46)
-          .margin({ left: 10 })
-          .backgroundColor(accentColor(this.dark))
-          .fontColor(Color.White)
-          .stateEffect(false)
-          .enabled(!this.saving)
-          .onClick((): void => {
+          }
+        })
+        // 保存：同上，主色文案；保存中降为不透明混色并在处理内实时拦截
+        // （不写 .enabled：面板在 saving=true 时构建会把禁用态固化，点击将永远无效）
+        Toggle({ type: ToggleType.Button, isOn: false }) {
+          Text(this.saving ? this.t($r('app.string.common_saving'))
+            : this.t($r('app.string.common_save')))
+            .fontSize(UiTokens.fsBody)
+            .fontColor(this.saving ? $r('app.color.btn_gray_text') : Color.White)
+        }
+        .layoutWeight(1)
+        .height(46)
+        .margin({ left: 10 })
+        .padding(0)
+        .backgroundColor(this.saving ? $r('app.color.card_bg') : accentColor(this.dark))
+        .selectedColor(Color.Transparent)
+        .systemMaterial(this.sheetBtnMaterial)
+        .onChange((isOn: boolean): void => {
+          if (isOn && !this.saving) {
             this.save();
-          })
+          }
+        })
       }
       .width('100%')
       .margin({ top: 10 })

@@ -30,6 +30,7 @@ import { UiTokens } from '../theme/UiTokens';
 import { GlassCard } from './GlassCard';
 import { SheetGate, moduleSheetOptions } from './SheetGate';
 import { CONN_CHANGE_EVENT } from './WorkbenchTab';
+import { menuOptions } from '../theme/MenuMaterial';
 
 @Component
 export struct AgentsTab {
@@ -86,6 +87,12 @@ export struct AgentsTab {
   @State isDark: boolean = false;
   @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
   private themeListener: ThemeListener | null = null;
+  // 面板操作键材质（THIN；interactive = 交互形变、lightEffect = 点光源，替代默认按压态）
+  private sheetBtnMaterial: SystemUiMaterial = new uiMaterial.ImmersiveMaterial({
+    style: uiMaterial.ImmersiveStyle.THIN,
+    interactive: true,
+    lightEffect: {}
+  });
   private agentListener: (data: emitter.EventData) => void = (_data: emitter.EventData): void => {};
   private connListener: (data: emitter.EventData) => void = (_data: emitter.EventData): void => {};
   private createListener: (data: emitter.EventData) => void = (_data: emitter.EventData): void => {
@@ -580,27 +587,44 @@ export struct AgentsTab {
       }
 
       Row() {
-        Button($r('app.string.common_cancel'))
-          .layoutWeight(1)
-          .height(42)
-          .backgroundColor($r('app.color.card_glass'))
-          .fontColor($r('app.color.btn_gray_text'))
-          .stateEffect(true)
-          .onClick((): void => {
+        // 取消：Toggle 外壳 + 沉浸材质（内容区 Button 直接挂材质是空转；Toggle 在豁免名单内）
+        Toggle({ type: ToggleType.Button, isOn: false }) {
+          Text($r('app.string.common_cancel'))
+            .fontSize(UiTokens.fsBody)
+            .fontColor($r('app.color.btn_gray_text'))
+        }
+        .layoutWeight(1)
+        .height(46)
+        .padding(0)
+        .backgroundColor(Color.Transparent)
+        .selectedColor(Color.Transparent)
+        .systemMaterial(this.sheetBtnMaterial)
+        .onChange((isOn: boolean): void => {
+          if (isOn) {
             this.closeSheet();
-          })
-        Button($r('app.string.common_save'))
-          .layoutWeight(1)
-          .height(42)
-          .margin({ left: 10 })
-          // 主操作与其余半模态一致走主题色实底（此前未给底色 → 回落系统蓝）
-          .backgroundColor(this.isDark ? this.theme.accentDark : this.theme.accent)
-          .fontColor(Color.White)
-          .enabled(!this.busy)
-          .stateEffect(true)
-          .onClick((): void => {
+          }
+        })
+        // 保存：同上；主操作走主题色实底（此前未给底色 → 回落系统蓝），提交中降为不透明混色
+        // 并在处理内实时拦截（不写 .enabled：面板在 busy=true 时构建会把禁用态固化）
+        Toggle({ type: ToggleType.Button, isOn: false }) {
+          Text(this.busy ? this.t($r('app.string.common_saving'))
+            : this.t($r('app.string.common_save')))
+            .fontSize(UiTokens.fsBody)
+            .fontColor(this.busy ? $r('app.color.btn_gray_text') : Color.White)
+        }
+        .layoutWeight(1)
+        .height(46)
+        .margin({ left: 10 })
+        .padding(0)
+        .backgroundColor(this.busy ? $r('app.color.card_bg')
+          : (this.isDark ? this.theme.accentDark : this.theme.accent))
+        .selectedColor(Color.Transparent)
+        .systemMaterial(this.sheetBtnMaterial)
+        .onChange((isOn: boolean): void => {
+          if (isOn && !this.busy) {
             this.submitSheet();
-          })
+          }
+        })
       }
       .width('100%')
       .margin({ top: 20 })
@@ -623,7 +647,7 @@ export struct AgentsTab {
           ListItem() {
             Column()
               .width('100%')
-              .height(UiTokens.agentsTopInset)
+              .height(UiTokens.searchStripTopInset)
           }
           if (this.listPhase() < 3) {
             ListItem() {
@@ -832,11 +856,7 @@ export struct AgentRow {
   onSwitch: () => void = () => {};
   onEdit: () => void = () => {};
   menuOf: (agent: AgentInfo) => MenuElement[] = (_a: AgentInfo): MenuElement[] => [];
-  // 弹出菜单材质（菜单属弹窗类，可在全页面生效；MenuOptions 继承 ContextMenuOptions.systemMaterial）
-  agentMenuMaterial: uiMaterial.ImmersiveMaterial = new uiMaterial.ImmersiveMaterial({
-    style: uiMaterial.ImmersiveStyle.THIN,
-    interactive: true
-  });
+  // 弹出菜单材质统一走 theme/MenuMaterial.menuOptions（弹窗类，全页面生效）
 
   private nameOf(): string {
     return this.displayName.length > 0 ? this.displayName : this.agent.name;
@@ -914,9 +934,12 @@ export struct AgentRow {
       // 管理入口（⋯）：内层 Button 承载 bindMenu —— 外层卡片是 Button，
       // 非内建可点击组件（如 Text）的点击会被外层吞掉，故内层也用 Button（内建手势优先）
       Button() {
-        Text('⋯')
-          .fontSize(20)
-          .fontColor($r('app.color.text_tertiary'))
+        // QwenPaw design 资产 icon-card-more.svg（源填充 #999999，按主题 token 上色）
+        Image($r('app.media.icon_card_more'))
+          .width(18)
+          .height(18)
+          .fillColor($r('app.color.text_tertiary'))
+          .draggable(false)
       }
       .type(ButtonType.Normal)
       .width(36)
@@ -924,7 +947,7 @@ export struct AgentRow {
       .padding(0)
       .backgroundColor(Color.Transparent)
       .margin({ left: 4 })
-      .bindMenu(this.menuOf(this.agent), { systemMaterial: this.agentMenuMaterial })
+      .bindMenu(this.menuOf(this.agent), menuOptions())
       }
       .width('100%')
       .alignItems(VerticalAlign.Center)

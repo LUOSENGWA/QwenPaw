@@ -11,15 +11,19 @@
  * （同一组件挂多个 bindSheet 只有最后一个生效）。
  */
 
-import { common } from '@kit.AbilityKit';
+import { common, Want, wantConstant } from '@kit.AbilityKit';
 import { http } from '@kit.NetworkKit';
-import { picker, fileIo as fs } from '@kit.CoreFileKit';
+import { picker, fileIo as fs, fileUri } from '@kit.CoreFileKit';
+import { filePreview } from '@kit.PreviewKit';
 import { doRequest, jsonOf } from '../services/ConnectionService';
 import { QpConnection, loadConnection } from '../services/ConnectionStore';
 import { PickedFile, pickFiles, removeTemp } from '../services/AttachmentPicker';
 import { IosGroup, IosRow } from './IosList';
 import { ModuleEmpty, ModuleError, ModuleFooter, ModuleLoading } from './ModuleStates';
 import { SheetGate, moduleSheetOptions } from './SheetGate';
+import { contextMenuOptions } from '../theme/MenuMaterial';
+import { Markdown } from '../vendor/markdown/Index';
+import { uiMaterial } from '@kit.ArkUI';
 import { UiTokens } from '../theme/UiTokens';
 import { isDarkMode, accentColor } from '../theme/Accent';
 
@@ -36,6 +40,12 @@ class FileEntry {
 
 function strOf(value: Object, fallback: string): string {
   return typeof value === 'string' ? value as string : fallback;
+}
+
+// markdown 判据：文件页对 .md 默认渲染预览（渲染库见 vendor/markdown，来源与许可见该目录）
+function isMarkdown(name: string): boolean {
+  const lower: string = name.toLowerCase();
+  return lower.endsWith('.md') || lower.endsWith('.markdown');
 }
 
 // 文本可编辑判据（对齐 7378：preview_kind 为空或 text/csv 才读文本）
@@ -103,9 +113,46 @@ async function uploadWorkspaceFiles(conn: QpConnection, dir: string,
   }
 }
 
-// 二进制下载 → 系统保存对话框选位置 → 写入（返回值 false = 用户取消保存）
-async function downloadWorkspaceFile(conn: QpConnection, entry: FileEntry,
-  ctx: common.UIAbilityContext): Promise<boolean> {
+// 扩展名 → mimeType（对齐 Preview Kit《filePreview（文件预览）》支持类型表；
+// 未列出的后缀传空串，官方口径：系统会通过 uri 后缀自行判断文件格式）
+const PREVIEW_MIME: Record<string, string> = {
+  'pdf': 'application/pdf',
+  'doc': 'application/msword',
+  'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'xls': 'application/vnd.ms-excel',
+  'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'ppt': 'application/vnd.ms-powerpoint',
+  'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'csv': 'text/csv',
+  'ofd': 'general.ofd',
+  'jpg': 'image/jpeg',
+  'jpeg': 'image/jpeg',
+  'png': 'image/png',
+  'gif': 'image/gif',
+  'webp': 'image/webp',
+  'bmp': 'image/bmp',
+  'svg': 'image/svg+xml',
+  'mp4': 'video/mp4',
+  'mkv': 'video/x-matroska',
+  'ts': 'video/mp2ts',
+  'm4a': 'audio/mp4a-latm',
+  'aac': 'audio/aac',
+  'mp3': 'audio/mpeg',
+  'ogg': 'audio/ogg',
+  'wav': 'audio/x-wav'
+};
+
+function mimeOf(name: string): string {
+  const dot: number = name.lastIndexOf('.');
+  if (dot < 0) {
+    return '';
+  }
+  const mime: string = PREVIEW_MIME[name.slice(dot + 1).toLowerCase()];
+  return typeof mime === 'string' ? mime : '';
+}
+
+// 取二进制内容（预览与保存共用同一次下载）
+async function fetchWorkspaceFile(conn: QpConnection, entry: FileEntry): Promise<ArrayBuffer> {
   const header: Record<string, Object> = authHeader(conn);
   const options: http.HttpRequestOptions = {
     method: http.RequestMethod.GET,
@@ -117,18 +164,60 @@ async function downloadWorkspaceFile(conn: QpConnection, entry: FileEntry,
   const url: string = `${conn.baseUrl}/api/workspace/file-download?path=`
     + `${encodeURIComponent(entry.path)}&root=workspace`;
   const req: http.HttpRequest = http.createHttp();
-  let buffer: ArrayBuffer | null = null;
   try {
     const resp: http.HttpResponse = await req.request(url, options);
     if (resp.responseCode < 200 || resp.responseCode >= 300) {
       throw new Error(`下载失败（HTTP ${resp.responseCode}）。`);
     }
-    buffer = resp.result as ArrayBuffer;
+    return resp.result as ArrayBuffer;
   } finally {
     req.destroy();
   }
+}
+
+// 文本落缓存文件（供「其他应用打开」交给外部应用读取）
+function writeCacheText(ctx: common.Context, name: string, text: string): string {
+  const path: string = `${ctx.cacheDir}/${Date.now()}-${name.length > 0 ? name : 'qwenpaw-file.md'}`;
+  const file: fs.File = fs.openSync(path,
+    fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+  try {
+    fs.writeSync(file.fd, text);
+  } finally {
+    fs.closeSync(file);
+  }
+  return path;
+}
+
+// 交给系统选择/拉起可打开该文件的其它应用（官方 FAQ《如何实现通过调用其他已安装的应用来打开特定文件》：
+// 隐式 Want + FLAG_AUTH_READ_URI_PERMISSION 完成 uri 转授权，无需额外权限声明）
+async function openWithOtherApp(ctx: common.UIAbilityContext, name: string, text: string): Promise<void> {
+  const path: string = writeCacheText(ctx, name, text);
+  const want: Want = {
+    action: 'ohos.want.action.viewData',
+    uri: fileUri.getUriFromPath(path),
+    type: mimeOf(name),
+    flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION
+  };
+  await ctx.startAbility(want);
+}
+
+// 写入应用缓存目录并返回路径：系统预览服务按 uri 读取（沙箱文件经 fileUri 转授权）
+function writeCacheFile(ctx: common.Context, name: string, buffer: ArrayBuffer): string {
+  const path: string = `${ctx.cacheDir}/${Date.now()}-${name.length > 0 ? name : 'qwenpaw-file'}`;
+  const file: fs.File = fs.openSync(path, fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE);
+  try {
+    fs.writeSync(file.fd, buffer);
+  } finally {
+    fs.closeSync(file);
+  }
+  return path;
+}
+
+// 系统保存对话框选位置 → 写入（返回值 false = 用户取消保存；data 支持二进制与文本两种载荷）
+async function saveWithPicker(ctx: common.UIAbilityContext, name: string,
+  data: ArrayBuffer | string): Promise<boolean> {
   const saveOptions: picker.DocumentSaveOptions = new picker.DocumentSaveOptions();
-  saveOptions.newFileNames = [entry.name.length > 0 ? entry.name : 'qwenpaw-file'];
+  saveOptions.newFileNames = [name.length > 0 ? name : 'qwenpaw-file'];
   const view: picker.DocumentViewPicker = new picker.DocumentViewPicker(ctx);
   const uris: string[] = await view.save(saveOptions);
   if (uris.length === 0) {
@@ -136,9 +225,7 @@ async function downloadWorkspaceFile(conn: QpConnection, entry: FileEntry,
   }
   const file: fs.File = fs.openSync(uris[0], fs.OpenMode.READ_WRITE);
   try {
-    if (buffer !== null) {
-      fs.writeSync(file.fd, buffer);
-    }
+    fs.writeSync(file.fd, data);
   } finally {
     fs.closeSync(file);
   }
@@ -157,6 +244,16 @@ export struct ModuleFiles {
   @State sheetEdit: boolean = false;      // false = 只读预览，true = 可编辑
   @State draftPath: string = '';
   @State draftText: string = '';
+  // 当前长按弹出菜单的文件路径（bindContextMenu(isShown) 的判据，收起时复位）
+  @State menuPath: string = '';
+  // markdown 渲染预览态（打开 .md 默认渲染，可切回纯文本编辑）
+  @State mdRendered: boolean = false;
+  // 面板操作键材质（THIN；interactive = 交互形变、lightEffect = 点光源，替代默认按压态）
+  private sheetBtnMaterial: SystemUiMaterial = new uiMaterial.ImmersiveMaterial({
+    style: uiMaterial.ImmersiveStyle.THIN,
+    interactive: true,
+    lightEffect: {}
+  });
   private gate: SheetGate = new SheetGate();
   private conn: QpConnection | null = null;
   private dark: boolean = false;
@@ -245,9 +342,50 @@ export struct ModuleFiles {
     this.sheetShown = true;
   }
 
+  // 另存为：把当前文本（含未写回工作区的编辑内容）经系统 picker 存到用户选的目录
+  // —— 与「保存」区分：保存 = 写回工作区原路径，另存为 = 导出到本地任意目录
+  private async saveAsLocal(): Promise<void> {
+    const ctx: common.UIAbilityContext = await this.context();
+    const segs: string[] = this.draftPath.split('/');
+    const name: string = segs.length > 0 ? segs[segs.length - 1] : 'qwenpaw-file.txt';
+    try {
+      const saved: boolean = await saveWithPicker(ctx, name, this.draftText);
+      if (saved) {
+        this.toast(this.t($r('app.string.module_files_downloaded')));
+      }
+    } catch (err) {
+      this.toast((err as Error).message);
+    }
+  }
+
+  // 用其它应用打开当前文件（把编辑/预览中的文本落缓存再交给系统）
+  private async openExternally(): Promise<void> {
+    const ctx: common.UIAbilityContext = await this.context();
+    const segs: string[] = this.draftPath.split('/');
+    const name: string = segs.length > 0 ? segs[segs.length - 1] : 'qwenpaw-file.md';
+    try {
+      await openWithOtherApp(ctx, name, this.draftText);
+    } catch (err) {
+      this.toast(this.t($r('app.string.module_files_open_external_failed')));
+    }
+  }
+
+  // markdown 打开：默认渲染预览（只读），底部给「编辑」切到纯文本编辑
+  private openMarkdown(path: string, text: string): void {
+    if (!this.gate.request()) {
+      return;
+    }
+    this.sheetEdit = false;
+    this.mdRendered = true;
+    this.draftPath = path;
+    this.draftText = text;
+    this.sheetShown = true;
+  }
+
   private closeSheet(): void {
     this.gate.beginClose();
     this.sheetShown = false;
+    this.mdRendered = false;
   }
 
   private async openEntry(e: FileEntry): Promise<void> {
@@ -258,7 +396,7 @@ export struct ModuleFiles {
       return;
     }
     if (!isTextual(e.previewKind)) {
-      await this.download(e);
+      await this.preview(e);
       return;
     }
     const c: QpConnection | null = this.conn;
@@ -278,6 +416,8 @@ export struct ModuleFiles {
       const content: string = strOf(data['content'], '');
       if (data['truncated'] === true) {
         this.openPreview(e.name, `${content}\n\n[${this.t($r('app.string.module_files_truncated'))}]`);
+      } else if (isMarkdown(e.name)) {
+        this.openMarkdown(e.path, content);
       } else {
         this.openEditor(e.path, content);
       }
@@ -288,7 +428,48 @@ export struct ModuleFiles {
     }
   }
 
-  private async download(e: FileEntry): Promise<void> {
+  // 非文本文件：交给系统预览服务（Preview Kit）——Office 由 WPS 提供能力，预览界面自带
+  // 「使用其他应用打开」与分享入口，无需自建预览器；沙箱内文件经 fileUri 转授权给预览服务读取。
+  // 预览不可用（格式不支持 / 设备无预览服务）时退回「保存到…」，保证文件始终能取走。
+  private async preview(e: FileEntry): Promise<void> {
+    const c: QpConnection | null = this.conn;
+    if (c === null) {
+      return;
+    }
+    const ctx: common.UIAbilityContext = await this.context();
+    this.busy = true;
+    this.busyLabel = this.t($r('app.string.module_files_opening'));
+    const path: string = await this.fetchToCache(c, ctx, e);
+    this.busy = false;
+    this.busyLabel = '';
+    if (path.length === 0) {
+      return;
+    }
+    try {
+      await filePreview.openPreview(ctx, {
+        title: e.name,
+        uri: fileUri.getUriFromPath(path),
+        mimeType: mimeOf(e.name)
+      });
+    } catch (err) {
+      this.toast(this.t($r('app.string.module_files_no_preview')));
+      await this.saveToPicker(e);
+    }
+  }
+
+  // 下载到应用缓存目录（失败已提示并返回空串）
+  private async fetchToCache(c: QpConnection, ctx: common.UIAbilityContext,
+    e: FileEntry): Promise<string> {
+    try {
+      return writeCacheFile(ctx, e.name, await fetchWorkspaceFile(c, e));
+    } catch (err) {
+      this.toast((err as Error).message);
+      return '';
+    }
+  }
+
+  // 「保存到…」：系统保存对话框选位置落盘（非文本文件的长按菜单与预览回退都走这里）
+  private async saveToPicker(e: FileEntry): Promise<void> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
       return;
@@ -297,7 +478,7 @@ export struct ModuleFiles {
     this.busy = true;
     this.busyLabel = this.t($r('app.string.module_files_downloading'));
     try {
-      const saved: boolean = await downloadWorkspaceFile(c, e, ctx);
+      const saved: boolean = await saveWithPicker(ctx, e.name, await fetchWorkspaceFile(c, e));
       if (saved) {
         this.toast(this.t($r('app.string.module_files_downloaded')));
       }
@@ -343,6 +524,8 @@ export struct ModuleFiles {
   private async save(): Promise<void> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
+      // 原先静默 return：点保存"完全没反应"即由此而来（未连接时应给出提示）
+      this.toast(this.t($r('app.string.wb_not_connected')));
       return;
     }
     const target: string = this.draftPath.trim();
@@ -360,6 +543,7 @@ export struct ModuleFiles {
       if (resp.responseCode < 200 || resp.responseCode >= 300) {
         throw new Error(`保存失败（HTTP ${resp.responseCode}）。`);
       }
+      this.toast(this.t($r('app.string.module_files_saved')));
       this.closeSheet();
       await this.load();
     } catch (err) {
@@ -390,10 +574,49 @@ export struct ModuleFiles {
 
   private iconOf(e: FileEntry): Resource {
     if (e.kind === 'directory') {
-      return $r('sys.symbol.folder');
+      return $r('app.media.folder');
     }
     return e.previewKind === 'text' || e.previewKind === 'csv'
-      ? $r('sys.symbol.doc_text') : $r('sys.symbol.doc_plaintext');
+      ? $r('app.media.file_text') : $r('app.media.file_text');
+  }
+
+  // 长按菜单的选项：统一材质出口 + 收起时复位长按判据（保证下次长按是真实边沿）
+  private fileMenuOptions(e: FileEntry): ContextMenuOptions {
+    const opts: ContextMenuOptions = contextMenuOptions();
+    opts.aboutToDisappear = (): void => {
+      if (this.menuPath === e.path) {
+        this.menuPath = '';
+      }
+    };
+    return opts;
+  }
+
+  // 列表行（文本文件点开进编辑面板；其余类型点开交给系统预览服务）
+  @Builder
+  entryRow(e: FileEntry) {
+    IosRow({
+      icon: this.iconOf(e),
+      label: e.name,
+      subtitle: e.kind === 'directory' ? this.t($r('app.string.module_files_folder'))
+        : (sizeLabel(e.size).length > 0 ? sizeLabel(e.size)
+          : this.t($r('app.string.module_files_file'))),
+      tappable: !this.busy,
+      // 只有文件夹给尾部箭头；单文件不给（点开是预览/编辑，不是"进入下一级"）
+      showChevron: e.kind === 'directory',
+      onPress: (): void => {
+        this.openEntry(e);
+      }
+    })
+  }
+
+  @Builder
+  fileMenu(e: FileEntry) {
+    Menu() {
+      MenuItem({ content: this.t($r('app.string.module_files_save_as')) })
+        .onClick((): void => {
+          this.saveToPicker(e);
+        })
+    }
   }
 
   @Builder
@@ -423,7 +646,21 @@ export struct ModuleFiles {
           .borderRadius(UiTokens.cardRadius)
       }
 
-      if (this.sheetEdit) {
+      if (this.mdRendered) {
+        Scroll() {
+          Column() {
+            Markdown({ content: this.draftText, options: { darkMode: this.dark } })
+          }
+          .width('100%')
+          .padding(UiTokens.cardPad)
+          .borderRadius(UiTokens.cardRadius)
+          .backgroundColor($r('app.color.sheet_card_bg'))
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .align(Alignment.Top)
+        .scrollBar(BarState.Auto)
+      } else if (this.sheetEdit) {
         TextArea({ text: $$this.draftText })
           .width('100%')
           .layoutWeight(1)
@@ -452,38 +689,126 @@ export struct ModuleFiles {
       }
 
       Row() {
-        if (this.sheetEdit) {
-          Button($r('app.string.common_cancel'))
-            .layoutWeight(1)
-            .height(46)
-            .backgroundColor($r('app.color.card_bg'))
-            .fontColor($r('app.color.btn_gray_text'))
-            .stateEffect(false)
-            .onClick((): void => {
-              this.closeSheet();
-            })
-          Button(this.busy ? this.t($r('app.string.module_files_saving'))
-            : this.t($r('app.string.common_save')))
-            .layoutWeight(1)
-            .height(46)
-            .margin({ left: 10 })
-            .backgroundColor(accentColor(this.dark))
-            .fontColor(Color.White)
-            .stateEffect(false)
-            .enabled(!this.busy)
-            .onClick((): void => {
+        if (this.mdRendered) {
+          // 渲染预览态：编辑（切纯文本） / 确认（关闭）
+          Toggle({ type: ToggleType.Button, isOn: false }) {
+            Text($r('app.string.common_edit'))
+              .fontSize(UiTokens.fsBody)
+              .fontColor($r('app.color.btn_gray_text'))
+          }
+          .layoutWeight(1)
+          .height(46)
+          .padding(0)
+          .backgroundColor(Color.Transparent)
+          .selectedColor(Color.Transparent)
+          .systemMaterial(this.sheetBtnMaterial)
+          .onChange((isOn: boolean): void => {
+            if (isOn) {
+              this.mdRendered = false;
+              this.sheetEdit = true;
+            }
+          })
+          // 其他应用打开（md 预览态；交给系统隐式 Want）
+          Toggle({ type: ToggleType.Button, isOn: false }) {
+            Text($r('app.string.module_files_open_external'))
+              .fontSize(UiTokens.fsSecondary)
+              .fontColor($r('app.color.btn_gray_text'))
+          }
+          .layoutWeight(1)
+          .height(46)
+          .margin({ left: 10 })
+          .padding(0)
+          .backgroundColor(Color.Transparent)
+          .selectedColor(Color.Transparent)
+          .systemMaterial(this.sheetBtnMaterial)
+          .onChange((isOn: boolean): void => {
+            if (isOn) {
+              this.openExternally();
+            }
+          })
+          Toggle({ type: ToggleType.Button, isOn: false }) {
+            Text($r('app.string.common_confirm'))
+              .fontSize(UiTokens.fsBody)
+              .fontColor($r('app.color.btn_gray_text'))
+          }
+          .layoutWeight(1)
+          .height(46)
+          .margin({ left: 10 })
+          .padding(0)
+          .backgroundColor(Color.Transparent)
+          .selectedColor(Color.Transparent)
+          .systemMaterial(this.sheetBtnMaterial)
+          .onChange((): void => {
+            this.closeSheet();
+          })
+        } else if (this.sheetEdit) {
+          // 取消：Toggle 外壳 + 沉浸材质（内容区 Button 直接挂材质是空转；Toggle 在豁免名单内）
+          Toggle({ type: ToggleType.Button, isOn: false }) {
+            Text($r('app.string.common_cancel'))
+              .fontSize(UiTokens.fsBody)
+              .fontColor($r('app.color.btn_gray_text'))
+          }
+          .layoutWeight(1)
+          .height(46)
+          .padding(0)
+          .backgroundColor(Color.Transparent)
+          .selectedColor(Color.Transparent)
+          .systemMaterial(this.sheetBtnMaterial)
+          .onChange((): void => {
+            this.closeSheet();
+          })
+          // 另存为…（系统 picker 可选目录；与「保存」= 写回工作区原路径区分）
+          Toggle({ type: ToggleType.Button, isOn: false }) {
+            Text($r('app.string.module_files_save_as'))
+              .fontSize(UiTokens.fsSecondary)
+              .fontColor($r('app.color.btn_gray_text'))
+          }
+          .layoutWeight(1)
+          .height(46)
+          .margin({ left: 10 })
+          .padding(0)
+          .backgroundColor(Color.Transparent)
+          .selectedColor(Color.Transparent)
+          .systemMaterial(this.sheetBtnMaterial)
+          .onChange((isOn: boolean): void => {
+            if (isOn) {
+              this.saveAsLocal();
+            }
+          })
+          // 保存：同上，主色文案；busy 时降为不透明混色并拦截点击
+          Toggle({ type: ToggleType.Button, isOn: false }) {
+            Text(this.busy ? this.t($r('app.string.module_files_saving'))
+              : this.t($r('app.string.common_save')))
+              .fontSize(UiTokens.fsBody)
+              .fontColor(this.busy ? $r('app.color.btn_gray_text') : Color.White)
+          }
+          .layoutWeight(1)
+          .height(46)
+          .margin({ left: 10 })
+          .padding(0)
+          .backgroundColor(this.busy ? $r('app.color.card_bg') : accentColor(this.dark))
+          .selectedColor(Color.Transparent)
+          .systemMaterial(this.sheetBtnMaterial)
+          .onChange((): void => {
+            if (!this.busy) {
               this.save();
-            })
+            }
+          })
         } else {
-          Button($r('app.string.common_confirm'))
-            .width('100%')
-            .height(46)
-            .backgroundColor($r('app.color.card_bg'))
-            .fontColor($r('app.color.btn_gray_text'))
-            .stateEffect(false)
-            .onClick((): void => {
-              this.closeSheet();
-            })
+          Toggle({ type: ToggleType.Button, isOn: false }) {
+            Text($r('app.string.common_confirm'))
+              .fontSize(UiTokens.fsBody)
+              .fontColor($r('app.color.btn_gray_text'))
+          }
+          .width('100%')
+          .height(46)
+          .padding(0)
+          .backgroundColor(Color.Transparent)
+          .selectedColor(Color.Transparent)
+          .systemMaterial(this.sheetBtnMaterial)
+          .onChange((): void => {
+            this.closeSheet();
+          })
         }
       }
       .width('100%')
@@ -508,7 +833,7 @@ export struct ModuleFiles {
           : this.t($r('app.string.module_files_root')) }) {
           if (this.dirPath.length > 0) {
             IosRow({
-              icon: $r('sys.symbol.chevron_left'),
+              icon: $r('app.media.chevron_left'),
               label: this.t($r('app.string.module_files_up')),
               tappable: true,
               onPress: (): void => {
@@ -517,7 +842,7 @@ export struct ModuleFiles {
             })
           }
           IosRow({
-            icon: $r('sys.symbol.arrow_up_to_line'),
+            icon: $r('app.media.arrow_up_to_line'),
             label: this.busy && this.busyLabel.length > 0 ? this.busyLabel
               : (this.busy ? this.t($r('app.string.module_files_uploading'))
                 : this.t($r('app.string.module_files_upload'))),
@@ -528,7 +853,7 @@ export struct ModuleFiles {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.doc_plaintext_and_pencil'),
+            icon: $r('app.media.file_pen'),
             label: this.t($r('app.string.module_files_new')),
             subtitle: this.t($r('app.string.module_files_new_hint')),
             tappable: true,
@@ -537,21 +862,27 @@ export struct ModuleFiles {
             }
           })
           ForEach(this.entries, (e: FileEntry) => {
-            IosRow({
-              icon: this.iconOf(e),
-              label: e.name,
-              subtitle: e.kind === 'directory' ? this.t($r('app.string.module_files_folder'))
-                : (sizeLabel(e.size).length > 0 ? sizeLabel(e.size)
-                  : this.t($r('app.string.module_files_file'))),
-              tappable: !this.busy,
-              onPress: (): void => {
-                this.openEntry(e);
+            if (e.kind === 'directory') {
+              this.entryRow(e)
+            } else {
+              // 长按「保存到…」：文件行外包一层内置容器才能挂长按菜单（自定义组件不能链属性方法）。
+              // ResponseType.LongPress 的最短长按时间由系统定死、无参数可调 → 改走 bindContextMenu(isShown)
+              // + LongPressGesture(duration: 300)（官方：LongPressGesture 默认 500ms 且 duration 可配），
+              // 收起时在 aboutToDisappear 复位，保证下次长按仍是真实的 false→true 边沿。
+              Column() {
+                this.entryRow(e)
               }
-            })
+              .width('100%')
+              .bindContextMenu(this.menuPath === e.path, this.fileMenu(e), this.fileMenuOptions(e))
+              .gesture(LongPressGesture({ duration: 300 })
+                .onAction((): void => {
+                  this.menuPath = e.path;
+                }))
+            }
           }, (e: FileEntry) => e.path)
         }
         if (this.entries.length === 0) {
-          ModuleEmpty($r('sys.symbol.folder'),
+          ModuleEmpty($r('app.media.folder'),
             this.t($r('app.string.module_files_empty_title')),
             this.t($r('app.string.module_files_empty_subtitle')))
         }

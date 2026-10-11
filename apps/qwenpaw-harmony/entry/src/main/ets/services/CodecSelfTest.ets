@@ -10,6 +10,7 @@
 import { encodeRelayFrame, decodeRelayFrame } from './RelayCodec';
 import { RelayFrame, RelayFrameHeader } from './RelayCodec';
 import { normalizeBaseUrl, hostOf } from './PairingModel';
+import { t } from './I18n';
 
 export interface SelfTestResult {
   name: string;
@@ -47,7 +48,7 @@ function dataHeader(): RelayFrameHeader {
 
 export function runCodecSelfTest(): SelfTestResult[] {
   const results: SelfTestResult[] = [];
-  results.push(check('1. data 帧 roundtrip（PR 向量）', () => {
+  results.push(check(t($r('app.string.self_test_01')), () => {
     const payload: Uint8Array = new Uint8Array([0, 1, 112, 110, 103]);
     const frame: RelayFrame = { header: dataHeader(), payload: payload };
     const decoded: RelayFrame = decodeRelayFrame(encodeRelayFrame(frame));
@@ -60,7 +61,7 @@ export function runCodecSelfTest(): SelfTestResult[] {
       decoded.payload[2] === 112 && decoded.payload[3] === 110 && decoded.payload[4] === 103;
   }));
 
-  results.push(check('2. session_event 缺 event_id 被拒（PR 向量）', () => {
+  results.push(check(t($r('app.string.self_test_02')), () => {
     const metadata: Record<string, Object> = { 'session_id': 'sess-9' };
     const header: RelayFrameHeader = {
       v: 1,
@@ -78,7 +79,7 @@ export function runCodecSelfTest(): SelfTestResult[] {
     }
   }));
 
-  results.push(check('3. open operation 白名单（PR 向量）', () => {
+  results.push(check(t($r('app.string.self_test_03')), () => {
     const okMeta: Record<string, Object> = { 'operation_id': 'message.send', 'schema_version': 1 };
     const okHeader: RelayFrameHeader = {
       v: 1, type: 'open', request_id: 'request-1', stream_id: 'stream-1', metadata: okMeta
@@ -96,7 +97,7 @@ export function runCodecSelfTest(): SelfTestResult[] {
     }
   }));
 
-  results.push(check('4. 截断输入被拒（PR 向量）', () => {
+  results.push(check(t($r('app.string.self_test_04')), () => {
     try {
       decodeRelayFrame(new Uint8Array([0, 0, 0, 20, 123, 125]));
       return false;
@@ -105,36 +106,36 @@ export function runCodecSelfTest(): SelfTestResult[] {
     }
   }));
 
-  results.push(check('5. canonical hello 逐字节', () => {
+  results.push(check(t($r('app.string.self_test_05')), () => {
     const metadata: Record<string, Object> = { 'client': 'qwenpaw-harmony', 'contract_version': '0.1.0' };
     const header: RelayFrameHeader = { v: 1, type: 'hello', metadata: metadata };
     return toHex(encodeRelayFrame({ header: header, payload: new Uint8Array(0) })) === HELLO_HEX;
   }));
 
-  results.push(check('6. canonical pong 逐字节', () => {
+  results.push(check(t($r('app.string.self_test_06')), () => {
     const header: RelayFrameHeader = { v: 1, type: 'pong' };
     return toHex(encodeRelayFrame({ header: header, payload: new Uint8Array(0) })) === PONG_HEX;
   }));
 
-  results.push(check('7. canonical data 逐字节', () => {
+  results.push(check(t($r('app.string.self_test_07')), () => {
     const payload: Uint8Array = new Uint8Array([0, 1, 112, 110, 103]);
     return toHex(encodeRelayFrame({ header: dataHeader(), payload: payload })) === DATA_HEX;
   }));
 
   // 地址解析（对齐 7378 api/pairing.ts 的标准 URL 解析：IPv4 / IPv6 / 域名 / 端口）
-  results.push(check('8. 地址：裸 host:port 补 http', () => {
-    return normalizeBaseUrl('192.168.1.10:8088') === 'http://192.168.1.10:8088';
+  results.push(check(t($r('app.string.self_test_08')), () => {
+    return normalizeBaseUrl('192.0.2.10:8088') === 'http://192.0.2.10:8088';
   }));
-  results.push(check('9. 地址：域名 + https + 端口', () => {
+  results.push(check(t($r('app.string.self_test_09')), () => {
     return normalizeBaseUrl('https://paw.example.com:8443') === 'https://paw.example.com:8443';
   }));
-  results.push(check('10. 地址：IPv6 保留方括号', () => {
+  results.push(check(t($r('app.string.self_test_10')), () => {
     return normalizeBaseUrl('http://[fe80::1]:8088') === 'http://[fe80::1]:8088';
   }));
-  results.push(check('11. 地址：hostOf 提取主机（IPv6 含端口）', () => {
+  results.push(check(t($r('app.string.self_test_11')), () => {
     return hostOf('http://[fe80::1]:8088') === '[fe80::1]:8088';
   }));
-  results.push(check('12. 地址：带凭据被拒', () => {
+  results.push(check(t($r('app.string.self_test_12')), () => {
     try {
       normalizeBaseUrl('http://u:p@nas.local:8088');
       return false;

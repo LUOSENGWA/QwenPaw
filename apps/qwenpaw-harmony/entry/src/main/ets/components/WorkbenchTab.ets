@@ -19,8 +19,12 @@ import { UiTokens } from '../theme/UiTokens';
 import { ThemeManager, ThemeSnapshot } from '../theme/ThemeManager';
 import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
 import { GlassCard } from './GlassCard';
+import { requestSettings } from '../services/AppEvents';
 
 export const CONN_CHANGE_EVENT: string = 'qp_conn_change';
+// 「连接存储被别处改写」事件：设置页切换/移除/断开/重连后发一条，会话页据此重取当前连接并复核。
+// 与 CONN_CHANGE_EVENT 分开，避免会话页自发自收（它自己发 CONN_CHANGE_EVENT）造成重连死循环。
+export const CONN_STORE_EVENT: string = 'qp_conn_store_change';
 
 @Component
 export struct WorkbenchTab {
@@ -28,7 +32,8 @@ export struct WorkbenchTab {
   @State connHost: string = '';
   @State connected: boolean = false;
   @State approvals: ApprovalInfo[] = [];
-  @State query: string = '';
+  // 搜索词由标题栏工具条（SearchPill）持有并单向同步进来（变更即过滤）
+  @Prop query: string = '';
   @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
   @State isDark: boolean = false;
 
@@ -123,10 +128,13 @@ export struct WorkbenchTab {
     }
   }
 
-  private t(res: Resource): string {
+  private t(res: ResourceStr): string {
+    if (typeof res === 'string') {
+      return res as string;
+    }
     try {
       const host: common.Context = this.getUIContext().getHostContext() as common.Context;
-      return host.resourceManager.getStringSync(res.id);
+      return host.resourceManager.getStringSync((res as Resource).id);
     } catch (e) {
       return '';
     }
@@ -143,7 +151,7 @@ export struct WorkbenchTab {
       return [];
     }
     return WORKBENCH_MODULES.filter((m: WorkbenchModule): boolean =>
-      `${m.title} ${m.subtitle} ${m.keywords.join(' ')} ${m.scope.join(' ')}`.toLowerCase().includes(q));
+      `${this.t(m.title)} ${this.t(m.subtitle)} ${m.keywords.join(' ')} ${m.scope.join(' ')}`.toLowerCase().includes(q));
   }
 
   @Builder
@@ -155,10 +163,9 @@ export struct WorkbenchTab {
       }
     }) {
       Row() {
-        SymbolGlyph(m.icon)
-          .fontSize(22)
-          .fontColor([this.accentColor()])
-          .width(40)
+        Image(m.icon)
+          .width(22).height(22)
+          .fillColor(this.accentColor())
           .margin({ right: 8 })
         Column() {
           Text(m.title)
@@ -175,9 +182,9 @@ export struct WorkbenchTab {
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
-        Text('›')
-          .fontSize(20)
-          .fontColor($r('app.color.text_tertiary'))
+        Image($r('app.media.chevron_right'))
+          .width(16).height(16)
+          .fillColor($r('app.color.text_tertiary'))
           .margin({ left: 8 })
       }
       .width('100%')
@@ -187,9 +194,9 @@ export struct WorkbenchTab {
   @Builder
   quickAction(icon: Resource, label: string, key: string, idx: number) {
     Column() {
-      SymbolGlyph(icon)
-        .fontSize(22)
-        .fontColor([this.accentColor()])
+      Image(icon)
+        .width(22).height(22)
+        .fillColor(this.accentColor())
       Text(label)
         .fontSize(UiTokens.fsCaption)
         .fontWeight(FontWeight.Medium)
@@ -215,7 +222,7 @@ export struct WorkbenchTab {
     GlassCard({
       insetH: 0,
       onTap: (): void => {
-        const param: Record<string, Object> = { 'title': cat.title, 'stack': this.navStack };
+        const param: Record<string, Object> = { 'key': cat.key, 'stack': this.navStack };
         this.navStack.pushPath({ name: 'workbench-category', param: param });
       }
     }) {
@@ -237,9 +244,9 @@ export struct WorkbenchTab {
           .fontSize(UiTokens.fsCaption)
           .fontColor($r('app.color.text_tertiary'))
           .margin({ right: 6 })
-        Text('›')
-          .fontSize(20)
-          .fontColor($r('app.color.text_tertiary'))
+        Image($r('app.media.chevron_right'))
+          .width(16).height(16)
+          .fillColor($r('app.color.text_tertiary'))
       }
       .width('100%')
     }
@@ -265,27 +272,9 @@ export struct WorkbenchTab {
       .backgroundColor($r('app.color.card_glass'))
       .margin({ top: UiTokens.cardVGap, bottom: UiTokens.cardVGap })
 
-      // 搜索条（对齐 7378 workbench 搜索；放大镜用系统符号，不用 emoji）
-        Row() {
-          SymbolGlyph($r('sys.symbol.magnifyingglass'))
-            .fontSize(17)
-            .fontColor([$r('app.color.text_secondary')])
-            .margin({ right: 8 })
-          TextInput({ text: $$this.query, placeholder: $r('app.string.workbench_search') })
-            .layoutWeight(1)
-            .height(38)
-            .fontSize(UiTokens.fsSecondary)
-            .backgroundColor(Color.Transparent)
-            .fontColor($r('app.color.input_text'))
-            .placeholderColor($r('app.color.placeholder'))
-        }
-        .width('100%')
-        .padding({ left: 12, right: 12 })
-        .borderRadius(UiTokens.cardRadius)
-        .backgroundColor($r('app.color.card_bg'))
-        .margin({ bottom: UiTokens.cardVGap })
-
-        if (this.query.trim().length > 0) {
+      // 搜索框已迁到标题栏工具条（SearchPill，沉浸光感 + 随 tab 切换一起滑；
+      // 搜索框已上提为标题栏工具条内容（会话/智能体/工作台三处统一形态），此处只渲染结果
+      if (this.query.trim().length > 0) {
           // 搜索结果
           ForEach(this.searchResults(), (m: WorkbenchModule) => {
             this.moduleRow(m)
@@ -297,10 +286,10 @@ export struct WorkbenchTab {
             .width('100%')
             .margin({ bottom: 4 })
           Row({ space: 10 }) {
-            this.quickAction($r('sys.symbol.list_bullet'), this.t($r('app.string.workbench_qa_sessions')), 'sessions', 0)
-            this.quickAction($r('sys.symbol.clock_arrow_2_circlepath'), this.t($r('app.string.workbench_qa_automation')), 'automation', 1)
-            this.quickAction($r('sys.symbol.folder'), this.t($r('app.string.workbench_qa_files')), 'files', 2)
-            this.quickAction($r('sys.symbol.wrench_and_screwdriver'), this.t($r('app.string.workbench_qa_tools')), 'tools', 3)
+            this.quickAction($r('app.media.list'), this.t($r('app.string.workbench_qa_sessions')), 'sessions', 0)
+            this.quickAction($r('app.media.timer_reset'), this.t($r('app.string.workbench_qa_automation')), 'automation', 1)
+            this.quickAction($r('app.media.folder'), this.t($r('app.string.workbench_qa_files')), 'files', 2)
+            this.quickAction($r('app.media.wrench'), this.t($r('app.string.workbench_qa_tools')), 'tools', 3)
           }
           .width('100%')
           .margin({ bottom: UiTokens.cardVGap })
@@ -312,7 +301,7 @@ export struct WorkbenchTab {
             .margin({ bottom: 4 })
           ForEach(WORKBENCH_CATEGORIES, (cat: WorkbenchCategory) => {
             this.categoryRow(cat)
-          }, (cat: WorkbenchCategory) => cat.title)
+          }, (cat: WorkbenchCategory) => cat.key)
 
           // 连接与设置 / 关于（一期入口保留）
           HubRow({
@@ -320,8 +309,8 @@ export struct WorkbenchTab {
             hintRes: $r('app.string.workbench_conn_hint'),
             arrow: true,
             onTap: (): void => {
-              const param: Record<string, Object> = { 'stack': this.navStack };
-              this.navStack.pushPath({ name: 'settings', param: param });
+              // 设置已是根页承载的半模态弹窗（⋮ 菜单同一入口），此处只发事件
+              requestSettings();
             }
           })
           HubRow({
@@ -340,7 +329,8 @@ export struct WorkbenchTab {
     }
     .width('100%')
     .constraintSize({ minHeight: '100%' })
-    .padding({ top: UiTokens.topInset, bottom: UiTokens.bottomInset, left: UiTokens.pageHMargin, right: UiTokens.pageHMargin })
+    // 顶部留白按「标题栏 + 搜索条 + 呼吸」给（工作台页搜索条已迁入标题栏 bottomBuilder）
+    .padding({ top: UiTokens.searchStripTopInset, bottom: UiTokens.bottomInset, left: UiTokens.pageHMargin, right: UiTokens.pageHMargin })
     .backgroundColor($r('app.color.page_bg'))
   }
 }
@@ -375,9 +365,9 @@ export struct HubRow {
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
         if (this.arrow) {
-          Text('›')
-            .fontSize(22)
-            .fontColor($r('app.color.text_tertiary'))
+          Image($r('app.media.chevron_right'))
+            .width(16).height(16)
+            .fillColor($r('app.color.text_tertiary'))
             .margin({ left: 8 })
         }
       }

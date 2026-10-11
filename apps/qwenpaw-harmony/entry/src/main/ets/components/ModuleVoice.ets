@@ -65,7 +65,7 @@ export struct ModuleVoice {
     body: string | null): Promise<Record<string, Object> | null> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
-      throw new Error('未连接');
+      throw new Error(this.t($r('app.string.wb_not_connected')));
     }
     const resp: http.HttpResponse = await doRequest(`${c.baseUrl}/api${path}`, method, body,
       c.token.length > 0 ? c.token : null, c.agentId);
@@ -253,7 +253,7 @@ export struct ModuleVoice {
       } else {
         IosGroup({ title: this.t($r('app.string.module_voice_group_audio')) }) {
           IosRow({
-            icon: $r('sys.symbol.message'),
+            icon: $r('app.media.message_square'),
             label: this.t($r('app.string.module_voice_audio_label')),
             subtitle: this.t($r('app.string.module_voice_audio_hint')),
             trailing: this.audioLabel(),
@@ -265,7 +265,7 @@ export struct ModuleVoice {
         }
         IosGroup({ title: this.t($r('app.string.module_voice_group_text')) }) {
           IosRow({
-            icon: $r('sys.symbol.translate'),
+            icon: $r('app.media.languages'),
             label: this.t($r('app.string.module_voice_type_label')),
             trailing: this.typeLabel(),
             tappable: !this.busy,
@@ -274,7 +274,7 @@ export struct ModuleVoice {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.doc_text'),
+            icon: $r('app.media.file_text'),
             label: this.t($r('app.string.module_voice_provider_label')),
             subtitle: `${this.availableCount()} ${this.t($r('app.string.module_voice_provider_available'))}`,
             trailing: this.providerLabel(),
@@ -284,7 +284,7 @@ export struct ModuleVoice {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.checkmark_circle'),
+            icon: $r('app.media.circle_check'),
             label: this.t($r('app.string.module_voice_local_label')),
             subtitle: `FFmpeg ${this.ffmpegInstalled
               ? this.t($r('app.string.module_voice_installed'))

@@ -57,13 +57,16 @@ export class SheetGate {
  */
 const IMMERSIVE_SUPPORTED: boolean = uiMaterial.isImmersiveMaterialSupported();
 
-export function moduleSheetOptions(height: number, gate: SheetGate,
-  setShown: (shown: boolean) => void): SheetOptions {
+// preferCenter：宽屏（平板/PC 横屏）用居中形态 —— 官方 preferType 口径：半模态在不同宽度设备上
+// 形态能力不同；底部形态在宽屏上会铺满整屏，既没有"窗外"可点，也不像弹窗
+export function moduleSheetOptions(height: SheetSize | Length, gate: SheetGate,
+  setShown: (shown: boolean) => void, preferCenter: boolean = false): SheetOptions {
   const material: SystemUiMaterial = new uiMaterial.ImmersiveMaterial({
     style: uiMaterial.ImmersiveStyle.ULTRA_THICK
   });
   const options: SheetOptions = {
     height: height,
+    preferType: preferCenter ? SheetType.CENTER : SheetType.BOTTOM,
     dragBar: true,
     showClose: true,
     backgroundColor: IMMERSIVE_SUPPORTED ? Color.Transparent : $r('app.color.page_bg'),

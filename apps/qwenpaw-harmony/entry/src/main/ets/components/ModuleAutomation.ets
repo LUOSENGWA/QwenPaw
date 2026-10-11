@@ -17,6 +17,7 @@ import { IosGroup, IosRow } from './IosList';
 import { ModuleEmpty, ModuleError, ModuleFooter, ModuleLoading } from './ModuleStates';
 import { SheetGate, moduleSheetOptions } from './SheetGate';
 import { FieldDef, FieldSheet, fieldDef } from './FieldSheet';
+import { menuOptions } from '../theme/MenuMaterial';
 
 const DEFAULT_TIMEOUT: number = 120;
 
@@ -313,7 +314,8 @@ export struct ModuleAutomation {
     target.defText = 'main';
     return [
       fieldDef('enabled', this.t($r('app.string.module_auto_f_hb_enabled')), 'switch'),
-      fieldDef('every', this.t($r('app.string.module_auto_f_hb_every')), 'text', true, '6h 或 30m'),
+      fieldDef('every', this.t($r('app.string.module_auto_f_hb_every')), 'text', true,
+        this.t($r('app.string.module_auto_hb_every_hint'))),
       target,
       fieldDef('timeoutSeconds', this.t($r('app.string.module_auto_f_hb_timeout')), 'number', true),
       fieldDef('activeHoursStart', this.t($r('app.string.module_auto_f_hb_start')), 'text', false, '08:00'),
@@ -732,7 +734,7 @@ export struct ModuleAutomation {
       } else {
         IosGroup({ title: this.t($r('app.string.module_auto_g_heartbeat')) }) {
           IosRow({
-            icon: $r('sys.symbol.clock_arrow_2_circlepath'),
+            icon: $r('app.media.timer_reset'),
             label: this.t($r('app.string.module_auto_wake')),
             subtitle: this.hasHeartbeat
               ? `${this.hbEvery.length > 0 ? this.hbEvery : this.t($r('app.string.module_auto_default_every'))}`
@@ -747,7 +749,7 @@ export struct ModuleAutomation {
           })
           if (this.hasHeartbeat) {
             IosRow({
-              icon: $r('sys.symbol.square_and_pencil'),
+              icon: $r('app.media.square_pen'),
               label: this.t($r('app.string.module_auto_config')),
               subtitle: this.t($r('app.string.module_auto_config_hint')),
               tappable: true,
@@ -763,7 +765,7 @@ export struct ModuleAutomation {
             ? `Cron Jobs · ${this.jobs.length}` : 'Cron Jobs'
         }) {
           IosRow({
-            icon: $r('sys.symbol.plus'),
+            icon: $r('app.media.plus'),
             label: this.t($r('app.string.module_auto_create')),
             subtitle: this.jobs.length > 0 ? this.t($r('app.string.module_auto_create_hint')) : '',
             tappable: true,
@@ -776,7 +778,7 @@ export struct ModuleAutomation {
           ForEach(this.jobs, (job: CronJob) => {
             Column() {
               IosRow({
-                icon: job.enabled ? $r('sys.symbol.clock') : $r('sys.symbol.clock_arrow_2_circlepath'),
+                icon: job.enabled ? $r('app.media.clock') : $r('app.media.timer_reset'),
                 label: job.name,
                 subtitle: this.scheduleLabel(this.rawOf(job.id)),
                 trailing: job.enabled ? this.t($r('app.string.module_auto_running'))
@@ -785,11 +787,11 @@ export struct ModuleAutomation {
               })
             }
             .width('100%')
-            .bindMenu(this.jobMenu(job))
+            .bindMenu(this.jobMenu(job), menuOptions())
           }, (job: CronJob) => job.id)
         }
         if (this.hasJobs && this.jobs.length === 0) {
-          ModuleEmpty($r('sys.symbol.clock'),
+          ModuleEmpty($r('app.media.clock'),
             this.t($r('app.string.module_auto_empty_title')),
             this.t($r('app.string.module_auto_empty_copy')))
         }

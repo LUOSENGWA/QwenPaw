@@ -5,6 +5,7 @@
  */
 
 import { url } from '@kit.ArkTS';
+import { t } from './I18n';
 
 export interface DirectPairing {
   baseUrl: string;
@@ -17,7 +18,7 @@ export interface DirectPairing {
 export function normalizeBaseUrl(value: string): string {
   let trimmed: string = value.trim();
   if (trimmed.length === 0) {
-    throw new Error('请输入 QwenPaw 地址。');
+    throw new Error(t($r('app.string.pairing_err_no_address')));
   }
   // 业界惯例：裸 host[:port] 或 [IPv6][:port] 自动补 http://
   if (trimmed.indexOf('://') < 0) {
@@ -27,19 +28,19 @@ export function normalizeBaseUrl(value: string): string {
   try {
     parsed = url.URL.parseURL(trimmed);
   } catch (e) {
-    throw new Error('QwenPaw 地址格式无效。');
+    throw new Error(t($r('app.string.pairing_err_bad_format')));
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('QwenPaw 地址必须使用 HTTP 或 HTTPS。');
+    throw new Error(t($r('app.string.pairing_err_scheme')));
   }
   if (parsed.username.length > 0 || parsed.password.length > 0) {
-    throw new Error('QwenPaw 地址不能带账号凭据。');
+    throw new Error(t($r('app.string.pairing_err_credentials')));
   }
   if (parsed.search.length > 0 || parsed.hash.length > 0) {
-    throw new Error('QwenPaw 地址不能带查询参数。');
+    throw new Error(t($r('app.string.pairing_err_query')));
   }
   if (parsed.host.length === 0) {
-    throw new Error('QwenPaw 地址缺少主机名。');
+    throw new Error(t($r('app.string.pairing_err_no_host')));
   }
   return parsed.toString().replace(/\/+$/, '');
 }
@@ -56,10 +57,10 @@ export function hostOf(baseUrl: string): string {
 export function parsePairingUri(value: string): DirectPairing {
   const v: string = value.trim();
   if (v.startsWith('{')) {
-    throw new Error('远程中转配对一期暂不支持（仅 LAN 直连）。');
+    throw new Error(t($r('app.string.pairing_err_relay_unsupported')));
   }
   if (!v.startsWith('qwenpaw://pair')) {
-    throw new Error('这不是一个 QwenPaw 配对码。');
+    throw new Error(t($r('app.string.pairing_err_not_code')));
   }
   const params: Record<string, string> = {};
   const qIndex: number = v.indexOf('?');
@@ -77,7 +78,7 @@ export function parsePairingUri(value: string): DirectPairing {
   const baseUrl: string = params['base_url'] !== undefined ? params['base_url'] : '';
   const ticket: string = params['ticket'] !== undefined ? params['ticket'] : '';
   if (version !== 1 || ticket.length < 32) {
-    throw new Error('这个 QwenPaw 配对码无效或已过期。');
+    throw new Error(t($r('app.string.pairing_err_code_invalid')));
   }
   const pairing: DirectPairing = { baseUrl: normalizeBaseUrl(baseUrl), ticket: ticket };
   return pairing;
@@ -87,7 +88,7 @@ export function parseManualInput(baseUrlRaw: string, ticketRaw: string): DirectP
   const baseUrl: string = normalizeBaseUrl(baseUrlRaw);
   const ticket: string = ticketRaw.trim();
   if (ticket.length > 0 && ticket.length < 32) {
-    throw new Error('配对码太短（至少 32 字符）。若服务未开账号体系，可留空直连。');
+    throw new Error(t($r('app.string.pairing_err_code_short')));
   }
   const pairing: DirectPairing = { baseUrl: baseUrl, ticket: ticket };
   return pairing;

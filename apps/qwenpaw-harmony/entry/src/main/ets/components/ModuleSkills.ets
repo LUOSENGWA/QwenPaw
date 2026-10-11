@@ -65,7 +65,7 @@ export struct ModuleSkills {
     body: string | null): Promise<http.HttpResponse> {
     const c: QpConnection | null = this.conn;
     if (c === null) {
-      throw new Error('未连接');
+      throw new Error(this.t($r('app.string.wb_not_connected')));
     }
     return doRequest(`${c.baseUrl}/api${path}`, method, body,
       c.token.length > 0 ? c.token : null, c.agentId);
@@ -275,7 +275,7 @@ export struct ModuleSkills {
       } else {
         IosGroup({ title: `${this.t($r('app.string.module_skill_group'))} · ${this.skills.length}` }) {
           IosRow({
-            icon: $r('sys.symbol.doc_plaintext_and_pencil'),
+            icon: $r('app.media.file_pen'),
             label: this.t($r('app.string.module_skill_new')),
             subtitle: this.t($r('app.string.module_skill_new_hint')),
             tappable: !this.busy,
@@ -284,7 +284,7 @@ export struct ModuleSkills {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.arrow_up_to_line'),
+            icon: $r('app.media.arrow_up_to_line'),
             label: this.t($r('app.string.module_skill_import')),
             subtitle: this.t($r('app.string.module_skill_import_hint')),
             tappable: !this.busy,
@@ -293,7 +293,7 @@ export struct ModuleSkills {
             }
           })
           IosRow({
-            icon: $r('sys.symbol.arrow_clockwise'),
+            icon: $r('app.media.refresh_cw'),
             label: this.t($r('app.string.module_skill_refresh')),
             tappable: !this.busy,
             onPress: (): void => {
@@ -302,7 +302,7 @@ export struct ModuleSkills {
           })
           ForEach(this.skills, (s: SkillItem) => {
             IosRow({
-              icon: $r('sys.symbol.wand_and_stars'),
+              icon: $r('app.media.wand_sparkles'),
               label: s.name,
               subtitle: s.description.length > 0 ? s.description
                 : (s.source.length > 0 ? s.source : this.t($r('app.string.module_skill_no_desc'))),
@@ -320,7 +320,7 @@ export struct ModuleSkills {
           }, (s: SkillItem) => s.name)
         }
         if (this.skills.length === 0) {
-          ModuleEmpty($r('sys.symbol.wand_and_stars'),
+          ModuleEmpty($r('app.media.wand_sparkles'),
             this.t($r('app.string.module_skill_empty_title')),
             this.t($r('app.string.module_skill_empty_subtitle')))
         }

@@ -4,23 +4,36 @@
  * 路由参数：{ chatId, chatName }（routerMap 名 chat，由「会话」tab 的会话行打开）。
  */
 
-import { HdsNavDestination, ScrollEffectType, BlurStrategy, hdsMaterial } from '@kit.UIDesignKit';
+import {
+  HdsNavDestination, ScrollEffectType, BlurStrategy, hdsMaterial,
+  HdsNavigationMenuContentOptions, HdsNavigationMenuItemOptions
+} from '@kit.UIDesignKit';
 import { emitter } from '@kit.BasicServicesKit';
 import { common, Configuration, ConfigurationConstant } from '@kit.AbilityKit';
-import { image } from '@kit.ImageKit';
-import { util } from '@kit.ArkTS';
-import { uiMaterial, KeyboardAvoidMode, window, curves } from '@kit.ArkUI';
-import { QpConnection, loadConnection } from '../services/ConnectionStore';
 import {
-  DisplayTurn, DisplayMessage, DisplayPart, ChatSnapshot, fetchChatMessages, streamChat, stopChat,
-  ChatStreamHandle, ChatInputPart, UploadResult, uploadAttachment, CHAT_CLOSED_EVENT
+  uiMaterial,
+  KeyboardAvoidMode,
+  window,
+  curves,
+} from '@kit.ArkUI';
+import { QpConnection, loadConnection } from '../services/ConnectionStore';
+import { sessionApproval, takeLoopCommand, applyLoopCommand } from '../services/SessionControls';
+import { PendingTurn, loadPendingTurn, savePendingTurn, clearPendingTurn } from '../services/PendingTurn';
+import {
+  DisplayTurn, DisplayMessage, DisplayPart, ChatSnapshot, fetchChatMessages, streamChat, reconnectChat, stopChat,
+  ChatStreamHandle, ChatInputPart, UploadResult, uploadAttachment, CHAT_CLOSED_EVENT,
+  ResponseBlock, responseBlocks, answerIndexOf, resultMediaOf, textOfParts, partsTextLen
 } from '../services/ChatDetailService';
 import { pickFiles, removeTemp, PickedFile } from '../services/AttachmentPicker';
 import { StreamDelta } from '../services/SseParser';
 import { ApprovalInfo, fetchApprovals, approveRequest, denyRequest } from '../services/ApprovalsService';
+import { fetchChats, ChatInfo, pinChat, setChatArchived, deleteChat } from '../services/ChatsService';
 import { ApprovalCard } from '../components/ApprovalCard';
+import { SessionRuntimeBar } from '../components/SessionRuntimeBar';
+import { ChatRow, ConversationRow, mergeToolMessages } from '../components/ChatRows';
+import { ChatSkeleton } from '../components/ChatSkeleton';
 import { ThemeManager, ThemeSnapshot, ThemeListener } from '../theme/ThemeManager';
-import { UiTokens } from '../theme/UiTokens';
+import { UiTokens, pxPerVp } from '../theme/UiTokens';
 import { blendHex } from '../theme/Accent';
 import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
 
@@ -43,14 +56,19 @@ export struct ChatDetailPage {
   params: Object = new Object();
   @State chatId: string = '';
   @State chatName: string = '';
-  @State turns: DisplayTurn[] = [];
+  // 置顶态（标题栏菜单用）：会话详情接口不回该字段，由会话列表里本会话那一项取得
+  @State chatPinned: boolean = false;
+  private stack: NavPathStack | null = null;
+  @State @Watch('onTurnsChanged') turns: DisplayTurn[] = [];
+  // 展开中的过程组（键 = turnId:块序号）：扁平化后组内行是页面 List 的独立项，
+  // 因此「哪一组展开」必须由页面持有，而不能留在组卡组件内部
+  @State expandedGroups: string[] = [];
   @State draft: string = '';
   @State sending: boolean = false;
   @State attachments: PendingAttachment[] = [];   // 已上传待发送的附件
   // 本会话待审批（对齐 RN chat/[id].tsx：root_session_id === chat.session_id || chat.id）
   @State approvals: ApprovalInfo[] = [];
   @State uploading: boolean = false;              // 附件上传中（按钮转圈）
-  @State loading: boolean = true;
   @State errorMsg: string = '';
   @State isDark: boolean = false;
   @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
@@ -61,6 +79,10 @@ export struct ChatDetailPage {
   private stream: ChatStreamHandle | null = null;
   // 发送用的 session_id（对齐 RN store：sessionId = chat.session_id，与 chatId 可能不同）
   private sessionId: string = '';
+  // 该会话归属的 user_id（详情响应带出；服务端按 (session_id, user_id) 定位 chat）
+  private userId: string = '';
+  // 在途回合的本地记录（对齐 7378 pendingChat：切走/重挂载后自己那条不丢）
+  private pending: PendingTurn | null = null;
   private pollTimer: number = -1;
 
   // 本会话待审批：按 root_session_id 归属过滤（与 RN 同口径）
@@ -99,6 +121,9 @@ export struct ChatDetailPage {
     }
   }
   private streamMsgId: string = '';
+  // 当前 message 流的 messageId（对齐 7378 store.send/reconnectChat 的 activeMessageId：
+  // messageId 变化即视为新一段文本，重置而不是续写）
+  private liveAnswerMsgId: string = '';
   private conn: QpConnection | null = null;
   private themeListener: ThemeListener | null = null;
 
@@ -124,8 +149,29 @@ export struct ChatDetailPage {
 
   // 输入条内容（挂在 Tabs 悬浮页签栏内）：材质、弹性形变、纯圆两端都由
   // barFloatingStyle.systemMaterial 提供，故控件一律透明底，让材质层透出。
+  // 会话运行状态条**不在**输入胶囊里：capsule 只包输入行，状态条浮在胶囊之上
+  // （见下方 runtimeRow + Tabs.overlay，官方《Tabs 使用 overlay 在页签栏添加自定义组件》写法）。
+  // 会话运行状态条（浮在输入胶囊之上）：宽度与胶囊对齐（左右各留 pageHMargin）；
+  // hitTestBehavior(Transparent) 让浮层空白处不阻挡下方消息列表滚动（官方 FAQ 明示）
+  @Builder
+  runtimeRow() {
+    Row() {
+      SessionRuntimeBar({
+        chatId: this.chatId,
+        sessionId: this.sessionId
+      })
+    }
+    .width('100%')
+    .height('100%')
+    // 浮层容器是整个 Tabs 尺寸 → 内容必须显式底对齐，行底即胶囊顶上方 3vp
+    .alignItems(VerticalAlign.Bottom)
+    .padding({ left: UiTokens.pageHMargin, right: UiTokens.pageHMargin })
+    .hitTestBehavior(HitTestMode.Transparent)
+  }
+
   @Builder
   composerBar() {
+    Column() {
         Row() {
           Button() {
             if (this.uploading) {
@@ -134,11 +180,13 @@ export struct ChatDetailPage {
                 .height(20)
                 .color(this.isDark ? this.theme.accentDark : this.theme.accent)
             } else {
-              SymbolGlyph($r('sys.symbol.plus'))
-                .fontSize(20)
-                // 可变字重加粗描边（默认字重下真机实测描边 5~6px，抬到 600 约 +2px）
-                .fontWeight(600)
-                .fontColor([$r('app.color.btn_gray_text')])
+              // 附件图标用 QwenPaw 自己的 design 资产（creator 的 HeroComposerCard 同款
+              // icon-add-file.svg）；源 SVG 深色填充在暗色主题下不可见 → fillColor 上色
+              Image($r('app.media.icon_add_file'))
+                .width(20)
+                .height(20)
+                .fillColor($r('app.color.btn_gray_text'))
+                .draggable(false)
             }
           }
           .type(ButtonType.Normal)
@@ -222,7 +270,10 @@ export struct ChatDetailPage {
         // 表现为"按钮没有垂直居中"。
         .padding({ left: 3, right: 3 })
         .alignItems(VerticalAlign.Center)
-        .height('100%')
+        .height(UiTokens.chatComposerBarInner)
+    }
+    .width('100%')
+    .justifyContent(FlexAlign.Center)
   }
 
   aboutToAppear(): void {
@@ -233,12 +284,14 @@ export struct ChatDetailPage {
     this.chatName = typeof name === 'string' ? name as string : '';
     const sid: Object = rec['sessionId'];
     this.sessionId = typeof sid === 'string' && (sid as string).length > 0 ? sid as string : this.chatId;
+    const uid: Object = rec['userId'];
+    this.userId = typeof uid === 'string' ? uid as string : '';
     this.prevKeyboardAvoidMode = this.getUIContext().getKeyboardAvoidMode();
     window.getLastWindow(getContext(this)).then((w: window.Window): void => {
       this.kbWindow = w;
       const cb = (data: window.AvoidAreaOptions): void => {
         if (data.type === window.AvoidAreaType.TYPE_KEYBOARD) {
-          const inset: number = data.area.bottomRect.height / 3.5;
+          const inset: number = data.area.bottomRect.height / pxPerVp();
           // 显式动画（官方 animateTo）：本身直接改 padding 是瞬跳，键盘弹起/收起会"啪"一下；
           // 这里给布局变化插入过渡，恢复与框架避让同感的起落动画。
           // 弹簧曲线（springMotion）比时长曲线更有"弹"感；用弹簧时 duration 不生效，
@@ -265,9 +318,9 @@ export struct ChatDetailPage {
     // 与 Console 保持同步（对齐 RN chat/[id].tsx 的 useFocusEffect + setInterval 轮询）：
     // 定时静默重取历史，Console 侧新消息也能进来；流式进行中不打扰
     this.pollTimer = setInterval((): void => {
-      this.refreshHistory();
       this.refreshApprovals();
-    }, 3000);
+      this.refreshHistory();
+    }, 2500);
   }
 
   aboutToDisappear(): void {
@@ -300,7 +353,151 @@ export struct ChatDetailPage {
     this.isDark = newConfig.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
   }
 
-  // 静默重取历史：Console 侧新增消息时同步过来（本地刚发的那条在服务端也已在列，条数一致则不动）
+  // 在途回合对账（对齐 7378 loadChat）：历史里已有同文本的用户消息且当前不在跑 → 清本地记录；
+  // 否则把在途那条合并回列表（已合并过则跳过），保证"切走再回来自己那条不丢"。
+  private async reconcilePending(running: boolean): Promise<void> {
+    const conn: QpConnection | null = this.conn;
+    if (conn === null) {
+      return;
+    }
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const rec: PendingTurn | null = await loadPendingTurn(ctx, conn.baseUrl, conn.agentId, this.chatId);
+    if (rec === null) {
+      this.pending = null;
+      return;
+    }
+    if (lastUserTextOf(this.turns) === rec.text && !running) {
+      await clearPendingTurn(ctx, conn.baseUrl, conn.agentId, this.chatId);
+      this.pending = null;
+      return;
+    }
+    this.pending = rec;
+    for (const t of this.turns) {
+      if (t.id === rec.turnId) {
+        return;
+      }
+    }
+    const up: DisplayPart = { type: 'text', text: rec.text };
+    const um: DisplayMessage = { id: `u_${rec.turnId}`, role: 'user', kind: 'message', parts: [up] };
+    const lt: DisplayTurn = { id: rec.turnId, user: um, responses: [], pending: true };
+    const arr: DisplayTurn[] = this.turns.slice();
+    arr.push(lt);
+    this.turns = arr;
+  }
+
+  // 会话展平成行序列（一行 = 一个 ListItem 的载荷）。顺序：用户气泡 → 响应分段（消息段 / 步骤组）
+  // → 待发占位（仅当该回合还没出可见文本）→ 该回合工具产出媒体。
+  private rows(): ConversationRow[] {
+    const out: ConversationRow[] = [];
+    for (const turn of this.turns) {
+      const tid: string = turn.id;
+      if (turn.user !== null) {
+        const u: DisplayMessage = turn.user;
+        out.push({ key: `u:${tid}`, kind: 'user', turnId: tid, messages: [u], parts: [],
+          pending: turn.pending, last: false, generating: false });
+      }
+      // 响应按 console 口径分段（responseBlocks，语义不改）：message 段逐段可见、其余收进 steps 组
+      const blocks: ResponseBlock[] = responseBlocks(turn.responses, turn.pending);
+      // 活动组 = 末块为 steps 的那一组（对齐 console findActiveStepBlockIndex：末块是 message 则无活动组）：
+      // 只有活动组处于「生成中」，其状态文案与转圈随生成推进；其余组一律视为已完成。
+      const activeStep: number = turn.pending && blocks.length > 0
+        && blocks[blocks.length - 1].kind === 'steps' ? blocks.length - 1 : -1;
+      for (let i = 0; i < blocks.length; i++) {
+        const b: ResponseBlock = blocks[i];
+            // 键 = 回合 + 块序号（结构键，不含文本长度/片段等指纹）：块内容是流式增长的，
+        // 若把指纹放进键，每次 flush 键都变 → 键变化即重建子树（闪烁 + 打断滚动/展开态）
+        if (b.kind === 'message') {
+          out.push({ key: `m:${tid}:${i}`, kind: 'message', turnId: tid, messages: b.messages, parts: [],
+            pending: turn.pending, last: !turn.pending, generating: false });
+        } else {
+          // 过程组 = 组头一条 +（展开时）组内每行各一条独立列表项：
+          // 一行一个 ListItem 才能吃到 List 的虚拟化（此前整组一个 item，数百行一次性构建）
+          const gk: string = `${tid}:${i}`;
+          const expanded: boolean = (i === activeStep && turn.pending)
+            || this.expandedGroups.indexOf(gk) >= 0;
+          out.push({ key: `sh:${gk}`, kind: 'stepsHeader', turnId: tid, messages: b.messages,
+            parts: [], pending: turn.pending, last: false, generating: i === activeStep,
+            expanded: expanded, groupKey: gk });
+          if (expanded) {
+            const procs: DisplayMessage[] = mergeToolMessages(b.messages);
+            for (let pi = 0; pi < procs.length; pi++) {
+              out.push({ key: `pr:${gk}:${pi}`, kind: 'proc', turnId: tid,
+                messages: [procs[pi]], parts: [], pending: turn.pending, last: false,
+                generating: i === activeStep });
+            }
+          }
+        }
+      }
+      if (turn.pending && !this.turnHasStreamText(turn)) {
+        out.push({ key: `p:${tid}`, kind: 'pending', turnId: tid, messages: [], parts: [],
+          pending: true, last: false, generating: false });
+      }
+      // 工具产出媒体（截图等）挂在整回合末尾（对齐 7378 buildTurn 的 resultMedia）
+      const media: DisplayPart[] = resultMediaOf(turn.responses, answerIndexOf(turn.responses));
+      if (media.length > 0) {
+        out.push({ key: `x:${tid}`, kind: 'media', turnId: tid, messages: [], parts: media,
+          pending: false, last: false, generating: false });
+      }
+    }
+    return out;
+  }
+
+  // 过程组展开/收起切换（组头点击）
+  private toggleSteps(gk: string): void {
+    const next: string[] = this.expandedGroups.slice();
+    const at: number = next.indexOf(gk);
+    if (at >= 0) {
+      next.splice(at, 1);
+    } else {
+      next.push(gk);
+    }
+    this.expandedGroups = next;
+  }
+
+  // 除末行外的全部行（进 ForEach，键稳定 ⇒ 不重建）
+  private doneRows(): ConversationRow[] {
+    const all: ConversationRow[] = this.rows();
+    if (all.length === 0) {
+      return all;
+    }
+    return all.slice(0, all.length - 1);
+  }
+
+  // 末行（挂在 ForEach 之外直接构造组件）：流式期间"正在长的那一行"就在末位，直接挂才能
+  // 每帧经 @Prop 拿到新行、按常规更新路径刷新（ForEach 键不变则子组件参数也不更新 → 冻帧）
+  private liveRow(): ConversationRow | null {
+    const all: ConversationRow[] = this.rows();
+    if (all.length === 0) {
+      return null;
+    }
+    return all[all.length - 1];
+  }
+
+  // 该回合是否已有可见的流式文本段（没有则出「正在生成」占位）
+  private turnHasStreamText(turn: DisplayTurn): boolean {
+    for (const m of turn.responses) {
+      if (m.role === 'assistant' && m.kind === 'message' && textOfParts(m.parts).length > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // 历史摘要：只反映内容（文本长度与过程条目数）；消息身份已是内容派生，同内容必同摘要
+  private turnsDigest(list: DisplayTurn[]): string {
+    const parts: string[] = list.map((t: DisplayTurn): string => {
+      let n: number = 0;
+      for (const m of t.responses) {
+        n += partsTextLen(m.parts);
+      }
+      return `${partsTextLen(t.user !== null ? t.user.parts : [])}:${n}:${t.responses.length}`;
+    });
+    return parts.join('|');
+  }
+
+  // 静默轻查（与审批同拍 2.5s）：① 服务端已 running 而本页没挂流（例如从 Console 发起的 run）
+  // → 补挂 reconnect 流，这是"别处跑起来本页也能实时看到"的关键；② 内容确有变化才替换
+  // （差异化判断，避免无谓重建；不强制滚到底，避免拽走阅读位置）。
   private async refreshHistory(): Promise<void> {
     if (this.sending || this.conn === null) {
       return;
@@ -309,9 +506,12 @@ export struct ChatDetailPage {
       const conn: QpConnection = this.conn;
       const snap: ChatSnapshot = await fetchChatMessages(conn.baseUrl, conn.token, conn.agentId,
         this.chatId);
-      if (snap.turns.length !== this.turns.length) {
+      if (snap.running && this.stream === null) {
+        this.attachRunningStream();
+        return;
+      }
+      if (this.turnsDigest(snap.turns) !== this.turnsDigest(this.turns)) {
         this.turns = snap.turns;
-        this.scrollBottom();
       }
     } catch (e) {
       // 静默刷新失败不影响页面
@@ -329,15 +529,42 @@ export struct ChatDetailPage {
       const snap: ChatSnapshot = await fetchChatMessages(conn.baseUrl, conn.token, conn.agentId,
         this.chatId);
       this.turns = snap.turns;
+      await this.reconcilePending(snap.running);
       this.scrollBottom();
     } catch (e) {
       // 重取失败：保留本地流式内容，下一轮轮询再对齐
     }
   }
 
+  // 重连进行中的会话流：与 send 同一套 delta 渲染与收尾（对齐 7378 store.reconnectChat）
+  private attachRunningStream(): void {
+    const conn: QpConnection | null = this.conn;
+    if (conn === null || this.stream !== null) {
+      return;
+    }
+    this.sending = true;
+    this.liveAnswerMsgId = '';
+    this.stream = reconnectChat(conn.baseUrl, conn.token, conn.agentId,
+      this.sessionId.length > 0 ? this.sessionId : this.chatId, this.userId,
+      (delta: StreamDelta): void => {
+        this.appendDelta(delta);
+      },
+      (error: string | null): void => {
+        this.sending = false;
+        this.stream = null;
+        if (error !== null) {
+          this.errorMsg = error;
+        }
+        this.reloadTurns();
+      });
+  }
+
   private async loadHistory(): Promise<void> {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    this.loading = true;
+    this.historyDone = false;
+    this.listSettled = false;
+    this.listShown = false;
+    this.armSettleCap();
     this.errorMsg = '';
     try {
       const conn: QpConnection | null = await loadConnection(ctx);
@@ -347,19 +574,28 @@ export struct ChatDetailPage {
       }
       this.conn = conn;
       this.refreshApprovals();
+      this.loadChatMeta(conn);
       const snap: ChatSnapshot = await fetchChatMessages(conn.baseUrl, conn.token, conn.agentId,
         this.chatId);
       this.turns = snap.turns;
+      // 身份优先取列表项带来的 user_id（详情接口不返回该字段）；详情里若有则以它为准
+      if (snap.userId.length > 0) {
+        this.userId = snap.userId;
+      }
+      await this.reconcilePending(snap.running);
+      this.stickBottom = true;
       if (snap.running) {
-        // 服务端上一轮仍在跑：先取到历史，用户可继续输入（一期不做自动重连流）
+        // 服务端上一轮仍在跑（本机离开后回来 / 从 Console 发起）：重连该流实时呈现剩余内容
+        // （对齐 7378 app/chat/[id].tsx：loadChat 回 running 时调用 reconnectChat）
         this.errorMsg = '';
+        this.attachRunningStream();
       }
       this.scrollBottom();
     } catch (e) {
       this.errorMsg = (e as Error).message;
-    } finally {
-      this.loading = false;
     }
+    this.historyDone = true;
+    this.onTurnsChanged();
   }
 
   private t(res: Resource): string {
@@ -371,17 +607,100 @@ export struct ChatDetailPage {
     }
   }
 
-  private scrollBottom(): void {
+  // 是否贴着底部（由列表可见区间推断：末项可见即视为在底部）
+  // 贴底跟随：新内容进来只在这个开关打开时把视图钉到底部；用户一旦自己划走就关掉
+  //（松手时用 Scroller.isAtEnd 判定，划回底部自动恢复跟随）。
+  // 历史是否已到位：未到位只显示转圈（空屏），到位后列表才成形（并带 initialIndex 直接落在底部）
+  @State historyDone: boolean = false;
+  // 列表已落定：内容仍在分批到达时不呈现，避免追加以"突然冒出来"的形式进入可视区
+  @State listSettled: boolean = false;
+  // 列表是否已首次呈现过：骨架屏只服务于"首次呈现之前"，呈现过就不再回退
+  //（否则后续 turns 变化会把 listSettled 复位 → 又退回骨架屏 → 骨架/列表闪烁）
+  @State listShown: boolean = false;
+  private settleTimer: number = -1;
+  private settleCapTimer: number = -1;
+
+  // 状态变化的唯一出口（ArkUI 状态钩子）：每次 turns 被写入都重置 220ms 静默窗口，
+  // 连续无变化才把骨架屏换成真实列表。实测进页面后行数会在 done 之后继续分批追加
+  //（5→15→27→41，约 250ms 内），先落定再呈现可消除该批追加造成的闪现。
+  private onTurnsChanged(): void {
+    if (!this.historyDone) {
+      return;
+    }
+    this.listSettled = false;
+    if (this.settleTimer >= 0) {
+      clearTimeout(this.settleTimer);
+    }
+    this.settleTimer = setTimeout((): void => {
+      this.settleTimer = -1;
+      this.listSettled = true;
+      this.listShown = true;
+    }, 220);
+  }
+
+  // 上限兜底：活跃流式会话会持续变化，静默窗口可能迟迟不到 → 1.2s 后强制落定
+  private armSettleCap(): void {
+    if (this.settleCapTimer >= 0) {
+      clearTimeout(this.settleCapTimer);
+    }
+    this.settleCapTimer = setTimeout((): void => {
+      this.settleCapTimer = -1;
+      this.listSettled = true;
+      this.listShown = true;
+    }, 1200);
+  }
+  private stickBottom: boolean = true;
+  // 手指是否正按在列表上：程序化 scrollEdge 不产生触摸事件，故用触摸态区分来源，
+  // 不用时间型守卫（上轮的时间守卫在流式期间几乎常开 → 用户拖动被一直忽略 → 又被拽回底部）
+  private userTouching: boolean = false;
+
+  private scrollBottom(force: boolean = false): void {
+    // 手指在列表上就绝不自动贴底（无论是否 force）：这是"上滑被拽回底部"的直接原因
+    if (this.userTouching) {
+      return;
+    }
+    if (!force && !this.stickBottom) {
+      return;
+    }
     setTimeout((): void => {
       this.scroller.scrollEdge(Edge.Bottom);
     }, 40);
   }
 
+  // 列表初始落点 = 末项：列表创建即停在底部，不靠多次 scrollEdge 追（追的过程就是跳变）
+  private initialRowIndex(): number {
+    const live: number = this.liveRow() !== null ? 1 : 0;
+    return this.doneRows().length + live + 1;
+  }
+
   // 流式增量归并（在 7378 基础上增强：message 实时进 answer；reasoning/tool 的流式文本
   // 亦实时累积进 process 对应消息，逐字呈现思考 / 工具文本，不再等流结束 reload）。
   // 归并进最后一个 turn（即发送时 push 的 live turn）。
+  private pendingDeltas: StreamDelta[] = [];
+  private deltaTimer: number = -1;
+
+  // delta 先入缓冲，按 ~60ms 合并后再一次性落到 turns
+  // （对齐 7378 store/app.ts 的 requestAnimationFrame 批量 flushText：逐 delta 重建会打爆渲染）
   private appendDelta(delta: StreamDelta): void {
-    if (delta.text.length === 0) {
+    // 工具段的载荷在 toolName/Input/Output 上（text 为空），不能按文本长度提前丢弃
+    const hasTool: boolean = delta.toolName !== undefined || delta.toolInput !== undefined
+      || delta.toolOutput !== undefined || delta.toolState !== undefined;
+    if (delta.text.length === 0 && !hasTool) {
+      return;
+    }
+    this.pendingDeltas.push(delta);
+    if (this.deltaTimer < 0) {
+      this.deltaTimer = setTimeout((): void => {
+        this.flushDeltas();
+      }, 60);
+    }
+  }
+
+  private flushDeltas(): void {
+    this.deltaTimer = -1;
+    const buf: StreamDelta[] = this.pendingDeltas;
+    this.pendingDeltas = [];
+    if (buf.length === 0) {
       return;
     }
     const arr: DisplayTurn[] = this.turns.slice();
@@ -389,58 +708,54 @@ export struct ChatDetailPage {
     if (li < 0) {
       return;
     }
-    const t: DisplayTurn = arr[li];
-    arr[li] = delta.kind === 'message' ? this.withAnswerDelta(t, delta) : this.withProcessDelta(t, delta);
+    let t: DisplayTurn = arr[li];
+    for (const d of buf) {
+      t = this.mergeDeltaInto(t, d);
+    }
+    arr[li] = t;
     this.turns = arr;
     this.scrollBottom();
   }
 
-  // message delta → 追加到 answer 文本分片
-  private withAnswerDelta(t: DisplayTurn, delta: StreamDelta): DisplayTurn {
-    const prev: DisplayMessage | null = t.answer;
-    const parts: DisplayPart[] = prev !== null ? prev.parts.slice() : [];
-    appendText(parts, delta.text);
-    const ansId: string = prev !== null ? prev.id
-      : (this.streamMsgId.length > 0 ? this.streamMsgId : `ans_${Date.now()}`);
-    const answer: DisplayMessage = { id: ansId, role: 'assistant', kind: 'message', parts: parts };
-    const nt: DisplayTurn = {
-      id: t.id, user: t.user, process: t.process.slice(), answer: answer,
-      resultMedia: t.resultMedia.slice(), pending: true
-    };
-    return nt;
-  }
-
-  // reasoning / tool delta → 按 messageId 累积进 process 中对应消息的文本分片
-  private withProcessDelta(t: DisplayTurn, delta: StreamDelta): DisplayTurn {
-    const proc: DisplayMessage[] = t.process.slice();
+  // 流式增量并入响应段（对齐 console：服务端每个 msg_id 就是一段，reasoning / plugin_call / message 各自成段）
+  //   同一 msg_id = 该段续写；换了 msg_id = 新起一段（旧段原地保留，不再像早先那样把 answer 覆盖掉）。
+  //   重连时服务端从头重放整条流，段按序重建，故不需要另做去重。
+  private mergeDeltaInto(t: DisplayTurn, delta: StreamDelta): DisplayTurn {
+    const res: DisplayMessage[] = t.responses.slice();
     let idx: number = -1;
-    for (let i = 0; i < proc.length; i++) {
-      if (proc[i].id === delta.messageId) {
+    for (let i = res.length - 1; i >= 0; i--) {
+      if (res[i].id === delta.messageId && delta.messageId.length > 0) {
         idx = i;
         break;
       }
     }
-    if (idx < 0) {
-      const parts: DisplayPart[] = [];
-      appendText(parts, delta.text);
-      const id: string = delta.messageId.length > 0 ? delta.messageId : `proc_${Date.now()}`;
-      const m: DisplayMessage = { id: id, role: 'assistant', kind: delta.kind, parts: parts };
-      proc.push(m);
-    } else {
-      const cur: DisplayMessage = proc[idx];
+    const hasTool: boolean = delta.toolName !== undefined || delta.toolInput !== undefined
+      || delta.toolOutput !== undefined || delta.toolState !== undefined;
+    if (idx >= 0) {
+      const cur: DisplayMessage = res[idx];
       const parts: DisplayPart[] = cur.parts.slice();
       appendText(parts, delta.text);
       const nm: DisplayMessage = {
         id: cur.id, role: cur.role, kind: cur.kind, parts: parts,
-        toolName: cur.toolName, toolState: cur.toolState, toolCallId: cur.toolCallId,
-        toolInput: cur.toolInput, toolOutput: cur.toolOutput
+        toolName: delta.toolName !== undefined ? delta.toolName : cur.toolName,
+        toolState: delta.toolState !== undefined ? delta.toolState : cur.toolState,
+        toolCallId: cur.toolCallId, toolInput: delta.toolInput !== undefined ? delta.toolInput
+          : (hasTool ? cur.toolInput : cur.toolInput),
+        toolOutput: delta.toolOutput !== undefined ? delta.toolOutput : cur.toolOutput
       };
-      proc[idx] = nm;
+      res[idx] = nm;
+    } else {
+      const parts: DisplayPart[] = [];
+      appendText(parts, delta.text);
+      const id: string = delta.messageId.length > 0 ? delta.messageId : `seg_${t.id}_${res.length}`;
+      const seg: DisplayMessage = {
+        id: id, role: 'assistant', kind: delta.kind, parts: parts,
+        toolName: delta.toolName, toolState: delta.toolState,
+        toolInput: delta.toolInput, toolOutput: delta.toolOutput
+      };
+      res.push(seg);
     }
-    const nt: DisplayTurn = {
-      id: t.id, user: t.user, process: proc, answer: t.answer,
-      resultMedia: t.resultMedia.slice(), pending: true
-    };
+    const nt: DisplayTurn = { id: t.id, user: t.user, responses: res, pending: true };
     return nt;
   }
 
@@ -502,7 +817,8 @@ export struct ChatDetailPage {
   }
 
   private send(): void {
-    const text: string = this.draft.trim();
+    // 循环模式（运行方式）在 7378 是发送前对文本加斜杠命令，且一次性生效
+    const text: string = applyLoopCommand(this.draft.trim(), takeLoopCommand());
     if ((text.length === 0 && this.attachments.length === 0) || this.sending || this.conn === null) {
       return;
     }
@@ -522,18 +838,24 @@ export struct ChatDetailPage {
     this.errorMsg = '';
     this.draft = '';
     this.sending = true;
+    this.stickBottom = true;
     this.streamMsgId = '';
+    this.liveAnswerMsgId = '';
     const userPart: DisplayPart = { type: 'text', text: echo };
     const userMsg: DisplayMessage = { id: `user_${Date.now()}`, role: 'user', kind: 'message', parts: [userPart] };
     const liveTurn: DisplayTurn = {
-      id: `turn_${Date.now()}`, user: userMsg, process: [], answer: null, resultMedia: [], pending: true
+      id: `turn_${Date.now()}`, user: userMsg, responses: [], pending: true
     };
+    const pendCtx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    const pend: PendingTurn = { turnId: liveTurn.id, text: text.length > 0 ? text : echo };
+    this.pending = pend;
+    savePendingTurn(pendCtx, conn.baseUrl, conn.agentId, this.chatId, pend);
     const next: DisplayTurn[] = this.turns.slice();
     next.push(liveTurn);
     this.turns = next;
-    this.scrollBottom();
+    this.scrollBottom(true);
     this.stream = streamChat(conn.baseUrl, conn.token, conn.agentId,
-      this.sessionId.length > 0 ? this.sessionId : this.chatId, parts,
+      this.sessionId.length > 0 ? this.sessionId : this.chatId, parts, sessionApproval(), this.userId,
       (delta: StreamDelta): void => {
         this.appendDelta(delta);
       },
@@ -542,6 +864,13 @@ export struct ChatDetailPage {
         this.stream = null;
         if (error !== null) {
           this.errorMsg = error;
+          // 发送失败：本地在途记录一并清掉（对齐 7378 send 的 catch → clearPendingChatTurn）
+          const c: QpConnection | null = this.conn;
+          if (c !== null) {
+            clearPendingTurn(getContext(this) as common.UIAbilityContext, c.baseUrl, c.agentId,
+              this.chatId);
+          }
+          this.pending = null;
         }
         // 流结束（成功或失败）都全量重取历史：补齐 reasoning/tool 块，并把 live turn 与
         // 服务端已落库的真实消息对齐（对齐 RN store.send 的 finally → loadChat）。
@@ -568,6 +897,129 @@ export struct ChatDetailPage {
     }
   }
 
+  // ============ 标题栏菜单（对齐 7378 app/chat/[id].tsx 头部动作）============
+  // 7378 菜单首项是「会话控制」（打开模型面板）；本页把模型/循环/审批做成常驻输入条
+  // （components/SessionRuntimeBar），不再藏进菜单，故菜单只保留 置顶 / 归档 / 删除。
+  private titleMenu(): HdsNavigationMenuContentOptions {
+    const items: Array<HdsNavigationMenuItemOptions> = [];
+    items.push({
+      content: {
+        label: this.chatPinned ? $r('app.string.chat_menu_unpin') : $r('app.string.chat_menu_pin'),
+        // 图标 = 7378 同一枚 lucide（Pin / 已置顶时 PinOff），落到 base/media
+        icon: this.chatPinned ? $r('app.media.pin_off') : $r('app.media.pin'),
+        action: (): void => {
+          this.togglePin();
+        }
+      }
+    });
+    items.push({
+      content: {
+        label: $r('app.string.chat_menu_archive'),
+        icon: $r('app.media.archive'),
+        action: (): void => {
+          this.archiveChat();
+        }
+      }
+    });
+    items.push({
+      content: {
+        label: $r('app.string.chat_menu_delete'),
+        icon: $r('app.media.trash_2'),
+        action: (): void => {
+          this.confirmDeleteChat();
+        }
+      }
+    });
+    return { value: items };
+  }
+
+  // 会话元信息（置顶态）：会话详情接口只回消息与运行状态，置顶态取自会话列表里本会话那一项
+  private loadChatMeta(conn: QpConnection): void {
+    fetchChats(conn.baseUrl, conn.token, conn.agentId, false).then((list: ChatInfo[]): void => {
+      for (const c of list) {
+        if (c.id === this.chatId) {
+          this.chatPinned = c.pinned;
+          return;
+        }
+      }
+    }).catch((e: Object): void => {
+      // 元信息取不到不影响会话本身，菜单里的置顶项按未置顶显示
+    });
+  }
+
+  private togglePin(): void {
+    const conn: QpConnection | null = this.conn;
+    if (conn === null) {
+      return;
+    }
+    const next: boolean = !this.chatPinned;
+    pinChat(conn.baseUrl, conn.token, conn.agentId, this.chatId, next).then((): void => {
+      this.chatPinned = next;
+      this.getUIContext().getPromptAction().showToast({
+        message: this.t(next ? $r('app.string.chat_menu_pin') : $r('app.string.chat_menu_unpin'))
+      });
+    }).catch((e: Object): void => {
+      this.getUIContext().getPromptAction().showToast({
+        message: this.t($r('app.string.chat_op_failed'))
+      });
+    });
+  }
+
+  // 归档：成功后退回会话列表（对齐 7378 archive → router.back()）
+  private archiveChat(): void {
+    const conn: QpConnection | null = this.conn;
+    if (conn === null) {
+      return;
+    }
+    setChatArchived(conn.baseUrl, conn.token, conn.agentId, this.chatId, true).then((): void => {
+      this.closePage();
+    }).catch((e: Object): void => {
+      this.getUIContext().getPromptAction().showToast({
+        message: this.t($r('app.string.chat_op_failed'))
+      });
+    });
+  }
+
+  // 删除：二次确认（对齐 7378 actionMenu 的 confirmDelete 态），成功后退回会话列表
+  private confirmDeleteChat(): void {
+    this.getUIContext().showAlertDialog({
+      title: $r('app.string.chat_menu_delete_title'),
+      message: $r('app.string.chat_menu_delete_msg'),
+      primaryButton: {
+        value: this.t($r('app.string.common_cancel')),
+        action: (): void => {}
+      },
+      secondaryButton: {
+        value: this.t($r('app.string.common_confirm_delete')),
+        fontColor: $r('app.color.status_error'),
+        action: (): void => {
+          this.doDeleteChat();
+        }
+      }
+    });
+  }
+
+  private doDeleteChat(): void {
+    const conn: QpConnection | null = this.conn;
+    if (conn === null) {
+      return;
+    }
+    deleteChat(conn.baseUrl, conn.token, conn.agentId, this.chatId).then((): void => {
+      this.closePage();
+    }).catch((e: Object): void => {
+      this.getUIContext().getPromptAction().showToast({
+        message: this.t($r('app.string.chat_op_failed'))
+      });
+    });
+  }
+
+  private closePage(): void {
+    const stack: NavPathStack | null = this.stack;
+    if (stack !== null) {
+      stack.pop(true);
+    }
+  }
+
   build() {
     HdsNavDestination() {
       Column() {
@@ -581,28 +1033,53 @@ export struct ChatDetailPage {
         // 悬浮输入胶囊（圆角+玻璃底+实时磨砂+投影）浮于其上（对齐「悬浮圆角胶囊 + 沉浸光感」）。
         Stack({ alignContent: Alignment.Bottom }) {
           Column() {
-        if (this.loading) {
-          Text($r('app.string.chat_loading'))
-            .fontSize(UiTokens.fsSecondary)
-            .fontColor($r('app.color.text_tertiary'))
-            .padding({ top: UiTokens.topInset })
-        } else {
-          List({ scroller: this.scroller }) {
+          if (!this.listShown) {
+            // 数据未到位用骨架屏占位（官方 FAQ faqs-arkui-1489：组件"突然出现"会造成闪动，
+            // 建议用骨架屏）；历史到位后整块替换为真实列表。
+            ChatSkeleton({ isDark: this.isDark })
+              .width('100%')
+              .layoutWeight(1)
+          } else {
+          List({ scroller: this.scroller, initialIndex: this.initialRowIndex() }) {
             // 首项占位 = 沉浸标题栏高度：留白必须落在**列表内容**里，不能加在包住 List 的容器上
             // （容器 padding 会把视口裁到标题栏之下 → 消息滚不过去 → 磨砂/渐变模糊没有内容可模糊）
             ListItem() {
               Column().width('100%').height(UiTokens.topInset)
             }
-            ForEach(this.turns, (t: DisplayTurn) => {
+            // 一行 = 一个 ListItem（用户气泡 / 消息段气泡 / 步骤组卡 / 工具产出媒体 / 待发占位）：
+            // List 的虚拟化对每行生效，只有"正在长的那一行"参与重排（此前整回合一个 ListItem，
+            // 流式期间每个 flush 都重排整个巨大 item，含数百行过程卡 → 滚动卡死）。
+            ForEach(this.doneRows(), (r: ConversationRow) => {
               ListItem() {
-                TurnView({
-                  turn: t,
+                ChatRow({
+                  row: r,
                   isDark: this.isDark,
                   theme: this.theme,
-                  baseUrl: this.conn !== null ? this.conn.baseUrl : ''
+                  baseUrl: this.conn !== null ? this.conn.baseUrl : '',
+                  onToggleSteps: (k: string): void => {
+                    this.toggleSteps(k);
+                  }
                 })
               }
-            }, (t: DisplayTurn) => t.id)
+            }, (r: ConversationRow) => r.key)
+            // 末行不进 ForEach：官方口径《ForEach 循环渲染·键值生成规则》——「当键值变化时，
+            // 框架会基于新的键值创建一个新的组件」，键不变则不重跑 itemGenerator，子组件参数也不更新；
+            // 而"正在长的那一行"内容一直在变、键不变 ⇒ 流式期间界面会冻在载入那一帧。
+            // 直接挂在 ForEach 之外：父组件每次 flush 重跑 build → ChatRow 经 @Prop 拿到新行按常规
+            // 更新路径刷新，逐字可见、且不重建子树（展开态/选择态不被打断）。
+            if (this.liveRow() !== null) {
+              ListItem() {
+                ChatRow({
+                  row: this.liveRow() as ConversationRow,
+                  isDark: this.isDark,
+                  theme: this.theme,
+                  baseUrl: this.conn !== null ? this.conn.baseUrl : '',
+                  onToggleSteps: (k: string): void => {
+                    this.toggleSteps(k);
+                  }
+                })
+              }
+            }
             // 末项占位 = 悬浮输入胶囊高度：滚到底时最后一条消息停在胶囊之上，其余消息从胶囊下滚过被实时模糊
             ListItem() {
               Column().width('100%').height(UiTokens.chatComposerInset)
@@ -612,7 +1089,26 @@ export struct ChatDetailPage {
           .width('100%')
           .scrollBar(BarState.Auto)
           .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-        }
+          // 贴底跟随的判定 = 滚动位置是否真的到了内容末尾（Scroller.isAtEnd）。
+          // 不能用「末项可见」当判据：末项是悬浮输入胶囊的留白（120vp 高），刚往上划一点它仍可见
+          // → 被判成"还贴着底" → 下一次流式 flush 又 scrollEdge(Bottom) 把阅读位置拽回底部
+          //（划到底后往上划会被跳回底部）。松手判定一次：划走即停止跟随，划回底部自动恢复。
+          .onReachEnd((): void => {
+            this.stickBottom = true;
+          })
+          // 手指一按就停止跟随并冻结自动贴底（松手后由 onScrollStop 按是否到底决定是否恢复）
+          .onTouch((e: TouchEvent): void => {
+            if (e.type === TouchType.Down) {
+              this.userTouching = true;
+              this.stickBottom = false;
+            } else if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
+              this.userTouching = false;
+            }
+          })
+          .onScrollStop((): void => {
+            this.stickBottom = this.scroller.isAtEnd();
+          })
+          }
 
         // 底部固定块（错误行 / 待发附件 / 待审批卡）：只在确有内容时占位——整组抬到悬浮输入胶囊之上，
         // 避免被胶囊压住；无内容时不占位，消息列表保持整屏（底部实时模糊的前提）
@@ -646,9 +1142,9 @@ export struct ChatDetailPage {
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
                   .constraintSize({ maxWidth: 180 })
-                Text('✕')
-                  .fontSize(UiTokens.fsCaption)
-                  .fontColor($r('app.color.text_tertiary'))
+                Image($r('app.media.x'))
+                  .width(12).height(12)
+                  .fillColor($r('app.color.text_tertiary'))
                   .margin({ left: 6 })
                   .onClick((): void => {
                     this.removeAttachment(a.id);
@@ -706,7 +1202,17 @@ export struct ChatDetailPage {
         }
         .barOverlap(true)
         .scrollable(false)
-        .barHeight(UiTokens.chatComposerHeight)
+        // 胶囊只承载输入行（状态条已移出，浮在胶囊之上）
+        .barHeight(UiTokens.chatComposerHeight + 1)
+        // 会话运行状态条：浮层定位在胶囊之上 3vp（官方 overlay：不重新渲染 TabBar 即可叠加组件）
+        .overlay(this.runtimeRow(), {
+          align: Alignment.Bottom,
+          offset: {
+            x: 0,
+            y: -(UiTokens.chatComposerBottomMargin + UiTokens.chatComposerHeight + 1
+              + UiTokens.chatRuntimeRowGap)
+          }
+        })
         .barFloatingStyle({
           // 悬浮栏默认按内容自适应宽度（实测输入框被压到 112px）→ 显式给宽度：
           // 344vp + 两侧 16vp = 376vp = 屏幕全宽（1316px @3.5）
@@ -747,13 +1253,27 @@ export struct ChatDetailPage {
         // 与主页同款沉浸：沉浸式渐变模糊 + 系统材质（等级 ADAPTIVE），静止态与滚动终点态都用主题色底。
         // 平台行为：深色下沉浸材质是"变暗玻璃"，会把底色压低（观感偏"透明"，属沉浸固有表现）。
         scrollEffectOpts: {
-          enableScrollEffect: true,
-          scrollEffectType: ScrollEffectType.IMMERSIVE_GRADIENT_BLUR
+          // enableScrollEffect = false：官方口径「不随内容区滚动动态生效标题栏样式，仅生效 originalStyle」，
+          // 且 GRADIENT_BLUR 下「直接生效模糊。此方式适用于列表型非沉浸式场景」。
+          // 为什么不用 true：为 true 时样式会在 originalStyle→scrollEffectStyle 之间随滚动**插值**，
+          // 上滚过程出现"先变暗、再慢慢回到主题色"的过渡观感（反复被报的"往上滑突然变黑然后慢慢
+          // 出现主题色"）；关掉后底色/模糊只有一个状态，结构上不可能再出现滚动时变色。
+          // 标题栏随滚动收起（titleMode FREE）与内容穿过时的模糊都不受影响。
+          enableScrollEffect: false,
+          scrollEffectType: ScrollEffectType.GRADIENT_BLUR
         },
-        blurStrategy: BlurStrategy.ADAPTIVE,
+        // blurStrategy 用 ENABLE 而不是 ADAPTIVE：官方口径 ADAPTIVE「根据系统策略调整…只有精美档位
+        // 配置能够生效模糊效果」—— 系统策略落在轻柔/流畅档时标题栏模糊整块不生效，内容滚过时就露出
+        // 未模糊的暗色内容（观感即"往上滑突然变黑"）；ENABLE 恒生效，观感才稳定。
+        blurStrategy: BlurStrategy.ENABLE,
         originalStyle: {
           backgroundStyle: {
             blurRadius: 12.0,
+            // 蒙层外扩必须写在**生效态**里：enableScrollEffect=false 时只生效 originalStyle，
+            // 写在 scrollEffectStyle 里会被忽略、退回平台默认外扩（真机实测蒙层 822 → 标题栏底边
+            // 710 之下多出 112px≈56vp），那段在工具条正下方留下一条中性灰带（浅色模式即"接缝"）；
+            // 归零后蒙层与标题栏同底（710），渐隐在标题栏内完成，内容区不再被蒙层压到。
+            maskExtraHeight: 0.0,
             backgroundColor: this.isDark ? this.theme.accentDark : this.theme.accent
           }
         },
@@ -771,162 +1291,44 @@ export struct ChatDetailPage {
       content: {
         title: {
           mainTitle: this.chatName.length > 0 ? this.chatName : $r('app.string.chat_title')
-        }
+        },
+        // 标题栏菜单（置顶 / 归档 / 删除）：对齐 7378 chat/[id].tsx 头部动作菜单
+        menu: this.titleMenu()
       },
       // 与主页一致：标题栏不避让安全区向上铺到状态栏区域，组件安全区关闭（否则状态栏带露系统底）
       avoidLayoutSafeArea: false,
       enableComponentSafeArea: false
     })
+    // 归档/删除成功后需要退回会话列表：页面自身没有导航栈入参，
+    // 按官方 NavDestinationContext.pathStack 在 ready 时取一次
+    .onReady((ctx: NavDestinationContext): void => {
+      this.stack = ctx.pathStack;
+    })
   }
 }
 
-// ============ 消息 turn 渲染（对齐 PR #7378 features/chat/MessageTurn.tsx）============
-// 结构：用户气泡（右）+ 「执行过程」折叠卡（思考/工具行）+ 「最终回复」气泡（左）。
-// 纯逻辑（取文本/工具名/状态/合并）为模块级函数；文案翻译走 $r，含 %d 的走 host getStringSync。
+// ============ 会话详情页用的显示纯逻辑 ============
+// 行渲染（气泡 / 步骤组卡 / 媒体 / 分发器）已拆到 components/ChatRows.ets；
+// 这里只留页面自身用到的两个分片辅助函数。
 
-// ============ 媒体渲染（对齐 PR #7378 features/chat/MessageParts.tsx）============
-// 媒体 URL 解析对齐 7378 client.ts mediaSource：http/https/data 原样，
-// 其余（相对路径 / file://）拼 {baseUrl}/api/files/preview{path}。
-// 注：ArkTS Image 组件不支持自定义请求头（7378 的 mediaSource 会带 Authorization / X-Agent-Id），
-// 开放模式免票据可直接访问；需票据的部署下带认证媒体暂不显示（后续以 ArrayBuffer 下载 → PixelMap 补齐）。
-function mediaUrl(baseUrl: string, rawUrl: string): string {
-  if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://') || rawUrl.startsWith('data:')) {
-    return rawUrl;
-  }
-  const path: string = rawUrl.startsWith('file://') ? rawUrl.slice(7) : rawUrl;
-  const previewPath: string = path.startsWith('/') ? path : `/${path}`;
-  return `${baseUrl}/api/files/preview${previewPath}`;
-}
-
-function mediaPartsOf(parts: DisplayPart[]): DisplayPart[] {
-  return parts.filter((p: DisplayPart): boolean => p.type !== 'text');
-}
-
-// 媒体类型图标（用文本符号：SymbolGlyph.fontColor 不接受 string 主题色）
-function mediaGlyph(type: string): string {
-  if (type === 'video') {
-    return '🎬';
-  }
-  if (type === 'audio') {
-    return '🎵';
-  }
-  if (type === 'image') {
-    return '🖼';
-  }
-  return '📄';
-}
-
-// 单个媒体块：图片 → Image（data URL 先转 PixelMap）；video/audio/file → 文件卡
-@Component
-struct MediaThumb {
-  @Prop part: DisplayPart = { type: '' };
-  @Prop baseUrl: string = '';
-  @State pixelMap: image.PixelMap | undefined = undefined;
-  @State failed: boolean = false;
-
-  aboutToAppear(): void {
-    const url: string = this.part.url !== undefined ? this.part.url : '';
-    if (this.part.type === 'image' && url.startsWith('data:')) {
-      this.decodeDataUrl(url);
-    }
-  }
-
-  // base64 data URL → PixelMap（ArkTS Image 不直读 data URL；对齐 7378 base64 source 分支）
-  private async decodeDataUrl(url: string): Promise<void> {
-    const comma: number = url.indexOf(',');
-    if (comma < 0) {
-      return;
-    }
-    try {
-      const bytes: Uint8Array = new util.Base64Helper().decodeSync(url.slice(comma + 1));
-      const buf: ArrayBuffer =
-        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-      const src: image.ImageSource = image.createImageSource(buf);
-      this.pixelMap = await src.createPixelMap();
-    } catch (e) {
-      this.failed = true;
-    }
-  }
-
-  @Builder
-  FileCard() {
-    Row() {
-      Text(mediaGlyph(this.part.type))
-        .fontSize(20)
-        .margin({ right: 10 })
-      Column() {
-        Text(this.part.name !== undefined && this.part.name.length > 0 ? this.part.name : this.part.type)
-          .fontSize(UiTokens.fsSecondary)
-          .fontColor($r('app.color.text_primary_strong'))
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.part.type)
-          .fontSize(UiTokens.fsCaption)
-          .fontColor($r('app.color.text_tertiary'))
-          .margin({ top: 2 })
+// 列表里最后一条用户消息的文本（在途回合对账用）
+function lastUserTextOf(list: DisplayTurn[]): string {
+  for (let i = list.length - 1; i >= 0; i--) {
+    const u: DisplayMessage | null = list[i].user;
+    if (u !== null) {
+      let out: string = '';
+      for (const p of u.parts) {
+        if (p.type === 'text' && p.text !== undefined) {
+          out += p.text;
+        }
       }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-    }
-    .width('100%')
-    .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-    .borderRadius(12)
-    .backgroundColor($r('app.color.card_bg'))
-  }
-
-  build() {
-    if (this.part.type === 'image' && !this.failed) {
-      if (this.pixelMap !== undefined) {
-        Image(this.pixelMap)
-          .width('100%')
-          .aspectRatio(1.28)
-          .objectFit(ImageFit.Cover)
-          .borderRadius(UiTokens.cardRadius)
-          .backgroundColor($r('app.color.card_bg'))
-      } else {
-        Image(mediaUrl(this.baseUrl, this.part.url !== undefined ? this.part.url : ''))
-          .width('100%')
-          .aspectRatio(1.28)
-          .objectFit(ImageFit.Cover)
-          .borderRadius(UiTokens.cardRadius)
-          .backgroundColor($r('app.color.card_bg'))
-          .onError((): void => {
-            this.failed = true;
-          })
-      }
-    } else {
-      this.FileCard()
+      return out;
     }
   }
+  return '';
 }
 
-// 媒体块列表（跳过 text；文本已由气泡另行渲染）
-@Component
-struct MediaParts {
-  @Prop parts: DisplayPart[] = [];
-  @Prop baseUrl: string = '';
-
-  build() {
-    Column({ space: 6 }) {
-      ForEach(mediaPartsOf(this.parts), (p: DisplayPart, i: number) => {
-        MediaThumb({ part: p, baseUrl: this.baseUrl })
-      }, (p: DisplayPart, i: number) => `${p.type}:${p.url !== undefined ? p.url : ''}:${i}`)
-    }
-    .width('100%')
-  }
-}
-
-function textOfParts(parts: DisplayPart[]): string {
-  let out: string = '';
-  for (const p of parts) {
-    if (p.type === 'text' && p.text !== undefined) {
-      out = out.length > 0 ? `${out} ${p.text}` : p.text;
-    }
-  }
-  return out;
-}
-
-// 追加文本到分片数组：合并进末尾 text 分片，否则新起一片
+// 追加文本到分片数组：合并进末尾 text 分片，否则新起一片（流式 delta 归并用）
 function appendText(parts: DisplayPart[], text: string): void {
   const lastIdx: number = parts.length - 1;
   if (lastIdx >= 0 && parts[lastIdx].type === 'text') {
@@ -935,456 +1337,5 @@ function appendText(parts: DisplayPart[], text: string): void {
   } else {
     const np: DisplayPart = { type: 'text', text: text };
     parts.push(np);
-  }
-}
-
-function toolLabel(name: string | undefined): string {
-  if (name === undefined || name.length === 0) {
-    return '';
-  }
-  return name.replace(/_/g, ' ');
-}
-
-// 工具状态等级（对齐 7378 toolStateLabel）：0=调用（无结果无状态）/1=失败/2=完成
-function toolStateLevel(m: DisplayMessage): number {
-  const hasOutput: boolean = m.toolOutput !== undefined && m.toolOutput.length > 0;
-  const state: string = m.toolState !== undefined ? m.toolState : '';
-  if (!hasOutput && state.length === 0) {
-    return 0;
-  }
-  if (/error|failed|denied|interrupted/i.test(state)) {
-    return 1;
-  }
-  return 2;
-}
-
-// 合并连续同工具消息（对齐 7378 mergeToolMessages：同 callId 或同 name 或无名同 input 无 output）
-function mergeToolMessages(messages: DisplayMessage[]): DisplayMessage[] {
-  const merged: DisplayMessage[] = [];
-  for (const message of messages) {
-    if (message.kind !== 'tool') {
-      merged.push(message);
-      continue;
-    }
-    const prev: DisplayMessage | null = merged.length > 0 ? merged[merged.length - 1] : null;
-    if (prev !== null && prev.kind === 'tool') {
-      const sameCall: boolean =
-        (message.toolCallId !== undefined && message.toolCallId.length > 0
-          && message.toolCallId === prev.toolCallId)
-        || (message.toolName !== undefined && message.toolName.length > 0
-          && message.toolName === prev.toolName)
-        || (message.toolName === undefined && message.toolInput !== undefined
-          && prev.toolInput !== undefined
-          && (prev.toolOutput === undefined || prev.toolOutput.length === 0));
-      if (sameCall) {
-        const parts: DisplayPart[] = [];
-        const seen: string[] = [];
-        for (const p of prev.parts.concat(message.parts)) {
-          const k: string = p.type === 'text' ? `t:${p.text !== undefined ? p.text : ''}`
-            : `${p.type}:${p.url !== undefined ? p.url : ''}`;
-          if (seen.indexOf(k) < 0) {
-            seen.push(k);
-            parts.push(p);
-          }
-        }
-        const nm: DisplayMessage = {
-          id: prev.id,
-          role: prev.role,
-          kind: 'tool',
-          parts: parts,
-          toolName: prev.toolName !== undefined ? prev.toolName : message.toolName,
-          toolState: message.toolState !== undefined ? message.toolState : prev.toolState,
-          toolCallId: prev.toolCallId !== undefined ? prev.toolCallId : message.toolCallId,
-          toolInput: prev.toolInput !== undefined ? prev.toolInput : message.toolInput,
-          toolOutput: message.toolOutput !== undefined ? message.toolOutput : prev.toolOutput
-        };
-        merged[merged.length - 1] = nm;
-        continue;
-      }
-    }
-    merged.push(message);
-  }
-  return merged;
-}
-
-@Component
-struct TurnView {
-  @Prop turn: DisplayTurn = { id: '', user: null, process: [], answer: null, resultMedia: [], pending: false };
-  @Prop isDark: boolean = false;
-  @Prop theme: ThemeSnapshot = ThemeManager.get().snapshot();
-  @Prop baseUrl: string = '';
-  @State answerExpanded: boolean = false;
-
-  build() {
-    Column() {
-      if (this.turn.user !== null) {
-        this.UserBubble()
-      }
-      if (this.turn.process.length > 0) {
-        ProcessCard({ process: this.turn.process, isDark: this.isDark, theme: this.theme })
-      }
-      if (this.shouldShowAnswer()) {
-        this.AnswerBubble()
-      }
-    }
-    .alignItems(HorizontalAlign.Start)
-    .width('100%')
-    .padding({ left: UiTokens.pageHMargin, right: UiTokens.pageHMargin })
-  }
-
-  private shouldShowAnswer(): boolean {
-    if (this.turn.pending) {
-      return true;
-    }
-    const a: DisplayMessage | null = this.turn.answer;
-    if (a === null) {
-      return false;
-    }
-    return a.parts.length > 0 || a.error !== undefined;
-  }
-
-  private userText(): string {
-    const u: DisplayMessage | null = this.turn.user;
-    return u !== null ? textOfParts(u.parts) : '';
-  }
-
-  private answerText(): string {
-    const a: DisplayMessage | null = this.turn.answer;
-    return a !== null ? textOfParts(a.parts) : '';
-  }
-
-  private answerError(): string {
-    const a: DisplayMessage | null = this.turn.answer;
-    return a !== null && a.error !== undefined ? a.error : '';
-  }
-
-  private answerCollapsible(): boolean {
-    return this.answerText().length > 240;
-  }
-
-  private userMedia(): DisplayPart[] {
-    const u: DisplayMessage | null = this.turn.user;
-    return u !== null ? mediaPartsOf(u.parts) : [];
-  }
-
-  // 答案媒体：answer.parts 媒体 + 工具产出的 resultMedia（对齐 7378 MessageTurn 媒体归集）
-  private answerMedia(): DisplayPart[] {
-    const a: DisplayMessage | null = this.turn.answer;
-    const own: DisplayPart[] = a !== null ? mediaPartsOf(a.parts) : [];
-    return own.concat(this.turn.resultMedia);
-  }
-
-  @Builder
-  UserBubble() {
-    Row() {
-      Blank()
-      Column() {
-        if (this.userText().length > 0) {
-          Text(this.userText())
-            .fontSize(UiTokens.fsBody)
-            .fontColor(Color.White)
-            .lineHeight(21)
-            .wordBreak(WordBreak.BREAK_WORD)
-        }
-        if (this.userMedia().length > 0) {
-          Column() {
-            MediaParts({ parts: this.userMedia(), baseUrl: this.baseUrl })
-          }
-          .width('100%')
-          .margin({ top: this.userText().length > 0 ? 6 : 0 })
-        }
-      }
-      .alignItems(HorizontalAlign.Start)
-      .constraintSize({ maxWidth: '78%' })
-      .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-      .borderRadius(UiTokens.cardRadius)
-      .backgroundColor(this.isDark ? this.theme.accentDark : this.theme.accent)
-    }
-    .width('100%')
-    .margin({ top: 6, bottom: 6 })
-    .justifyContent(FlexAlign.End)
-  }
-
-  @Builder
-  AnswerBubble() {
-    Column() {
-      Text($r('app.string.chat_answer_label'))
-        .fontSize(UiTokens.fsCaption)
-        .fontColor($r('app.color.text_tertiary'))
-        .margin({ bottom: 4 })
-      if (this.answerError().length > 0) {
-        Text($r('app.string.chat_answer_failed'))
-          .fontSize(UiTokens.fsCaption)
-          .fontColor($r('app.color.status_error'))
-          .fontWeight(FontWeight.Bold)
-          .margin({ bottom: 2 })
-        Text(this.answerError())
-          .fontSize(UiTokens.fsCaption)
-          .fontColor($r('app.color.status_error'))
-          .wordBreak(WordBreak.BREAK_ALL)
-      } else if (this.answerText().length > 0) {
-        Text(this.answerText())
-          .fontSize(UiTokens.fsBody)
-          .fontColor($r('app.color.input_text'))
-          .lineHeight(21)
-          .wordBreak(WordBreak.BREAK_WORD)
-          .maxLines(this.answerExpanded ? 0 : 12)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-        if (this.answerCollapsible()) {
-          Text(this.answerExpanded ? $r('app.string.chat_answer_collapse') : $r('app.string.chat_answer_expand'))
-            .fontSize(UiTokens.fsCaption)
-            .fontColor(this.isDark ? this.theme.accentDark : this.theme.accent)
-            .margin({ top: 4 })
-            .onClick((): void => {
-              this.answerExpanded = !this.answerExpanded;
-            })
-        }
-      } else if (this.turn.pending) {
-        Text($r('app.string.chat_answer_pending'))
-          .fontSize(UiTokens.fsSecondary)
-          .fontColor($r('app.color.text_tertiary'))
-      }
-      // 答案媒体（答案自带图片 + 工具产出的媒体，如截图）
-      if (this.answerMedia().length > 0) {
-        Column() {
-          MediaParts({ parts: this.answerMedia(), baseUrl: this.baseUrl })
-        }
-        .width('100%')
-        .margin({ top: 8 })
-      }
-    }
-    .alignItems(HorizontalAlign.Start)
-    .width('100%')
-    .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-    .borderRadius(UiTokens.cardRadius)
-    .backgroundColor($r('app.color.card_surface'))
-    .margin({ top: 6, bottom: 6 })
-  }
-}
-
-@Component
-struct ProcessCard {
-  @Prop process: DisplayMessage[] = [];
-  @Prop isDark: boolean = false;
-  @Prop theme: ThemeSnapshot = ThemeManager.get().snapshot();
-  @State expanded: boolean = false;
-
-  private t(res: Resource): string {
-    try {
-      const host: common.Context = this.getUIContext().getHostContext() as common.Context;
-      return host.resourceManager.getStringSync(res.id);
-    } catch (e) {
-      return '';
-    }
-  }
-
-  private accentColor(): string {
-    return this.isDark ? this.theme.accentDark : this.theme.accent;
-  }
-
-  private merged(): DisplayMessage[] {
-    return mergeToolMessages(this.process);
-  }
-
-  private summary(): string {
-    const msgs: DisplayMessage[] = this.process;
-    let tools: number = 0;
-    let toolCalls: number = 0;
-    let hasReasoning: boolean = false;
-    for (const m of msgs) {
-      if (m.kind === 'tool') {
-        tools++;
-        if (m.toolState === undefined || m.toolState.length === 0) {
-          toolCalls++;
-        }
-      } else if (m.kind === 'reasoning') {
-        hasReasoning = true;
-      }
-    }
-    const effectiveTools: number = toolCalls > 0 ? toolCalls : tools;
-    const parts: string[] = [];
-    if (hasReasoning) {
-      parts.push(this.t($r('app.string.chat_process_summary_think')));
-    }
-    if (effectiveTools > 0) {
-      parts.push(this.t($r('app.string.chat_process_summary_tools')).replace('%d', effectiveTools.toString()));
-    }
-    if (parts.length === 0) {
-      parts.push(this.t($r('app.string.chat_process_summary_mid')).replace('%d', msgs.length.toString()));
-    }
-    return parts.join(' · ');
-  }
-
-  build() {
-    Column() {
-      Row() {
-        Text('⚙')
-          .fontSize(15)
-          .fontColor(this.accentColor())
-          .margin({ right: 8 })
-        Column() {
-          Text($r('app.string.chat_process_tool'))
-            .fontSize(UiTokens.fsSecondary)
-            .fontColor($r('app.color.text_secondary'))
-            .fontWeight(FontWeight.Medium)
-          Text(this.summary())
-            .fontSize(UiTokens.fsCaption)
-            .fontColor($r('app.color.text_tertiary'))
-            .maxLines(1)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-        .alignItems(HorizontalAlign.Start)
-        .layoutWeight(1)
-        Text(this.expanded ? '▲' : '▼')
-          .fontSize(12)
-          .fontColor($r('app.color.text_tertiary'))
-      }
-      .width('100%')
-      .padding({ left: 12, right: 12, top: 10, bottom: 10 })
-      .onClick((): void => {
-        this.expanded = !this.expanded;
-      })
-      if (this.expanded) {
-        Column() {
-          ForEach(this.merged(), (m: DisplayMessage) => {
-            ProcessRow({ message: m, isDark: this.isDark, theme: this.theme })
-          }, (m: DisplayMessage) => m.id)
-        }
-        .width('100%')
-        .padding({ left: 12, right: 12, bottom: 8 })
-      }
-    }
-    .width('100%')
-    .borderRadius(UiTokens.cardRadius)
-    .backgroundColor($r('app.color.card_surface'))
-    .borderWidth(1)
-    .borderColor($r('app.color.line'))
-    .margin({ top: 6, bottom: 6 })
-  }
-}
-
-@Component
-struct ProcessRow {
-  @Prop message: DisplayMessage = { id: '', role: 'assistant', kind: 'message', parts: [] };
-  @Prop isDark: boolean = false;
-  @Prop theme: ThemeSnapshot = ThemeManager.get().snapshot();
-  @State detailExpanded: boolean = false;
-
-  private accentColor(): string {
-    return this.isDark ? this.theme.accentDark : this.theme.accent;
-  }
-
-  private title(): ResourceStr {
-    if (this.message.kind === 'reasoning') {
-      return $r('app.string.chat_process_thinking_label');
-    }
-    if (this.message.kind === 'tool') {
-      const name: string = toolLabel(this.message.toolName);
-      return name.length > 0 ? name : $r('app.string.chat_tool_default');
-    }
-    return $r('app.string.chat_process_mid');
-  }
-
-  private stateLabel(): ResourceStr {
-    const lv: number = toolStateLevel(this.message);
-    if (lv === 0) {
-      return $r('app.string.chat_process_call');
-    }
-    if (lv === 1) {
-      return $r('app.string.chat_process_failed');
-    }
-    return $r('app.string.chat_process_done');
-  }
-
-  private toolDetailText(which: string): string {
-    if (which === 'input') {
-      return this.message.toolInput !== undefined ? this.message.toolInput : '';
-    }
-    return this.message.toolOutput !== undefined ? this.message.toolOutput : '';
-  }
-
-  private detailCollapsible(): boolean {
-    const a: number = this.message.toolInput !== undefined ? this.message.toolInput.length : 0;
-    const b: number = this.message.toolOutput !== undefined ? this.message.toolOutput.length : 0;
-    return a + b > 420;
-  }
-
-  @Builder
-  ToolDetailBlock(which: string) {
-    if (this.toolDetailText(which).length > 0) {
-      Column() {
-        Text(which === 'input' ? $r('app.string.chat_tool_input_label') : $r('app.string.chat_tool_output_label'))
-          .fontSize(UiTokens.fsCaption)
-          .fontColor($r('app.color.text_tertiary'))
-          .fontWeight(FontWeight.Bold)
-          .margin({ bottom: 2 })
-        Text(this.toolDetailText(which))
-          .fontSize(UiTokens.fsCaption)
-          .fontColor($r('app.color.text_secondary'))
-          .lineHeight(18)
-          .wordBreak(WordBreak.BREAK_ALL)
-          .maxLines(this.detailExpanded ? 0 : 6)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-      }
-      .alignItems(HorizontalAlign.Start)
-      .width('100%')
-      .padding(8)
-      .borderRadius(UiTokens.chipRadius)
-      .backgroundColor($r('app.color.card_bg'))
-      .margin({ top: 6 })
-    }
-  }
-
-  build() {
-    Row() {
-      Text('✓')
-        .fontSize(15)
-        .fontColor(this.accentColor())
-        .margin({ right: 8 })
-      Column() {
-        Row() {
-          Text(this.title())
-            .fontSize(UiTokens.fsSecondary)
-            .fontColor($r('app.color.text_secondary'))
-            .fontWeight(FontWeight.Medium)
-            .layoutWeight(1)
-          if (this.message.kind === 'tool') {
-            Text(this.stateLabel())
-              .fontSize(UiTokens.fsCaption)
-              .fontColor($r('app.color.text_tertiary'))
-              .padding({ left: 6, right: 6, top: 2, bottom: 2 })
-              .borderRadius(6)
-              .backgroundColor($r('app.color.card_bg'))
-          }
-        }
-        .width('100%')
-        .alignItems(VerticalAlign.Center)
-        if (this.message.kind === 'tool') {
-          this.ToolDetailBlock('input')
-          this.ToolDetailBlock('output')
-          if (this.detailCollapsible()) {
-            Text(this.detailExpanded ? $r('app.string.chat_tool_collapse') : $r('app.string.chat_tool_view_full'))
-              .fontSize(UiTokens.fsCaption)
-              .fontColor(this.isDark ? this.theme.accentDark : this.theme.accent)
-              .margin({ top: 4 })
-              .onClick((): void => {
-                this.detailExpanded = !this.detailExpanded;
-              })
-          }
-        } else {
-          Text(textOfParts(this.message.parts))
-            .fontSize(UiTokens.fsCaption)
-            .fontColor($r('app.color.text_secondary'))
-            .lineHeight(18)
-            .wordBreak(WordBreak.BREAK_ALL)
-            .maxLines(6)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-        }
-      }
-      .alignItems(HorizontalAlign.Start)
-      .layoutWeight(1)
-    }
-    .width('100%')
-    .padding({ top: 10, bottom: 10 })
   }
 }
