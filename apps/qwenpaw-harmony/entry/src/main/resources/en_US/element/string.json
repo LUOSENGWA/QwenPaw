@@ -13,10 +13,6 @@
       "value": "QwenPaw for HarmonyOS"
     },
     {
-      "name": "EntryAbility_label",
-      "value": "QwenPaw"
-    },
-    {
       "name": "tab_chats",
       "value": "Chats"
     },
@@ -2073,6 +2069,14 @@
       "value": "No archived chats"
     },
     {
+      "name": "chats_search_empty_title",
+      "value": "No matching chats"
+    },
+    {
+      "name": "chats_search_empty_hint",
+      "value": "Try a different keyword."
+    },
+    {
       "name": "module_dbg_group",
       "value": "Backend"
     },
@@ -3821,6 +3825,10 @@
       "value": "Tool call"
     },
     {
+      "name": "chat_tool_loading",
+      "value": "Working..."
+    },
+    {
       "name": "chat_answer_label",
       "value": "Final reply"
     },
@@ -3935,10 +3943,6 @@
     {
       "name": "chat_runtime_approval_title",
       "value": "Approval level"
-    },
-    {
-      "name": "chat_runtime_follow_agent",
-      "value": "Follow Agent"
     },
     {
       "name": "chat_runtime_agent_default",
@@ -4625,8 +4629,144 @@
       "value": "12. Address: credentials rejected"
     },
     {
-      "name": "chat_placeholder_hint",
-      "value": "Pick a conversation to start"
+      "name": "split_placeholder_hint",
+      "value": "Pick something on the left"
+    },
+    {
+      "name": "chat_file_no_preview",
+      "value": "Preview unavailable — long-press the file to share it instead"
+    },
+    {
+      "name": "chat_file_gone",
+      "value": "The source file is no longer on the server, so it cannot be previewed"
+    },
+    {
+      "name": "chat_file_created",
+      "value": "created"
+    },
+    {
+      "name": "chat_file_modified",
+      "value": "modified"
+    },
+    {
+      "name": "chat_file_sent",
+      "value": "sent"
+    },
+    {
+      "name": "err_load_agent_approval",
+      "value": "Failed to load the approval level (HTTP %d)."
+    },
+    {
+      "name": "err_save_agent_approval",
+      "value": "Failed to save the approval level (HTTP %d)."
+    },
+    {
+      "name": "chat_runtime_follow_agent",
+      "value": "Follow Agent"
+    },
+    {
+      "name": "community_open_link_failed",
+      "value": "Failed to open the link"
+    },
+    {
+      "name": "agent_detail_title",
+      "value": "Agent details"
+    },
+    {
+      "name": "agent_detail_id",
+      "value": "Agent ID"
+    },
+    {
+      "name": "agent_detail_desc",
+      "value": "Description"
+    },
+    {
+      "name": "agent_detail_status",
+      "value": "Status"
+    },
+    {
+      "name": "agent_detail_disabled",
+      "value": "Disabled"
+    },
+    {
+      "name": "agent_detail_model",
+      "value": "Active model"
+    },
+    {
+      "name": "agent_detail_backend",
+      "value": "Backend"
+    },
+    {
+      "name": "agent_detail_workspace",
+      "value": "Connection"
+    },
+    {
+      "name": "agent_detail_missing",
+      "value": "This agent was not found"
+    },
+    {
+      "name": "agent_detail_load_failed",
+      "value": "Failed to load the agent"
+    },
+    {
+      "name": "agent_detail_switch_failed",
+      "value": "Failed to switch the agent"
+    },
+    {
+      "name": "agent_detail_make_current",
+      "value": "Make current"
+    },
+    {
+      "name": "agent_detail_switching",
+      "value": "Switching…"
+    },
+    {
+      "name": "agents_current",
+      "value": "Current"
+    },
+    {
+      "name": "markdown_copy_ok",
+      "value": "Copied"
+    },
+    {
+      "name": "markdown_copy_failed",
+      "value": "Copy failed"
+    },
+    {
+      "name": "gateway_err_no_access_path",
+      "value": "Platform pairing info is incomplete. Please pair this QwenPaw again."
+    },
+    {
+      "name": "gateway_err_cannot_resume",
+      "value": "Platform cannot resume access to this QwenPaw yet. Please try again later."
+    },
+    {
+      "name": "gateway_err_no_entry",
+      "value": "Platform did not return a valid QwenPaw pairing entry. Please try again later."
+    },
+    {
+      "name": "gateway_err_no_base_url",
+      "value": "Platform did not return a usable QwenPaw address. Please try again later."
+    },
+    {
+      "name": "gateway_err_resume_failed",
+      "value": "Failed to resume access to the Platform instance. Please go back and enter again."
+    },
+    {
+      "name": "pd_pair_now",
+      "value": "Connect this instance"
+    },
+    {
+      "name": "pd_pairing",
+      "value": "Pairing securely…"
+    },
+    {
+      "name": "pd_paired",
+      "value": "Paired and set as the current connection"
+    },
+    {
+      "name": "pd_pair_failed",
+      "value": "Secure pairing failed. Please retry."
     }
   ]
 }

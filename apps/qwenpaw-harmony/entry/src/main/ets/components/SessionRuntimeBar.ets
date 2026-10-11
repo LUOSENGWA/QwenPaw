@@ -30,11 +30,12 @@ import { common } from '@kit.AbilityKit';
 import { http } from '@kit.NetworkKit';
 import { uiMaterial } from '@kit.ArkUI';
 import { doRequest, jsonArrayOf, jsonOf } from '../services/ConnectionService';
-import { QpConnection, loadConnection } from '../services/ConnectionStore';
+import { loadConnection, QpConnection } from '../services/ConnectionStore';
+import { fetchAgentApproval } from '../services/AgentApproval';
+import { loadChatApproval, saveChatApproval } from '../services/ChatApprovalPrefs';
 import { setSessionApproval, setLoopCommand } from '../services/SessionControls';
 import { OptionsSheet, SheetOption, optionOf } from './OptionsSheet';
 import { SheetGate, moduleSheetOptions } from './SheetGate';
-import { UiTokens } from '../theme/UiTokens';
 
 const MODE_MODEL: string = 'model';
 const MODE_LOOP: string = 'loop';
@@ -116,6 +117,7 @@ export struct SessionRuntimeBar {
   @Prop sessionId: string = '';
   @State modelName: string = '';
   @State modelProvider: string = '';   // 生效模型所属 provider（用于在面板里标出当前项）
+  @State agentModelName: string = '';  // Agent 默认模型（会话覆盖时在面板标题里标出默认值）
   @State loopText: string = '';
   @State approval: string = '';
   @State busy: boolean = false;
@@ -123,7 +125,6 @@ export struct SessionRuntimeBar {
   @State loopOptions: SheetOption[] = [];
   // 运行方式 id → 斜杠命令（GET /loops 的 slash_command；只读不参与渲染，故用普通 Map）
   private loopSlash: Map<string, string> = new Map<string, string>();
-  @State approvalOptions: SheetOption[] = [];
   @State sheetMode: string = '';
   // 本会话选择（对齐 7378：随发送生效，不写服务端）：循环取模式 id，审批取原始等级（空 = 跟随 Agent）
   @State pickedLoopId: string = '';
@@ -133,6 +134,8 @@ export struct SessionRuntimeBar {
   private choices: ModelChoice[] = [];
   private gate: SheetGate = new SheetGate();
   private conn: QpConnection | null = null;
+  // 会话级运行态轻查定时器（-1 = 未启动）
+  private liveTimer: number = -1;
 
   aboutToAppear(): void {
     this.load();
@@ -169,72 +172,176 @@ export struct SessionRuntimeBar {
     }
     this.conn = c;
     try {
+      const sessionModel: boolean = await this.readSessionModel();
       const act: http.HttpResponse = await this.send('/models/active', http.RequestMethod.GET, null);
       if (act.responseCode >= 200 && act.responseCode < 300) {
         const llm: Object = jsonOf(act)['active_llm'];
         if (llm !== undefined && llm !== null) {
           const rec: Record<string, Object> = llm as Record<string, Object>;
           const m: Object = rec['model'];
-          this.modelName = typeof m === 'string' ? m as string : '';
-          const p: Object = rec['provider_id'];
-          this.modelProvider = typeof p === 'string' ? p as string : '';
-        }
-      }
-      const sid: string = this.sessionId.length > 0 ? this.sessionId : this.chatId;
-      const st: http.HttpResponse = await this.send(
-        `/loops/status?chat_id=${encodeURIComponent(this.chatId)}&session_id=${encodeURIComponent(sid)}`,
-        http.RequestMethod.GET, null);
-      if (st.responseCode >= 200 && st.responseCode < 300) {
-        const rec: Record<string, Object> = jsonOf(st);
-        const state: Object = rec['state'];
-        const stateText: string = typeof state === 'string' ? state as string : '';
-        const mode: Object = rec['mode'];
-        let text: string = '';
-        if (stateText.trim().toLowerCase() === 'idle') {
-          // 空闲：显示所选运行方式的名字（对齐 7378 loopName(selectedLoopMode)）
-          const ls: http.HttpResponse = await this.send('/loops', http.RequestMethod.GET, null);
-          if (ls.responseCode >= 200 && ls.responseCode < 300) {
-            const arr: Object = jsonOf(ls)['loops'] !== undefined ? jsonOf(ls)['loops'] : jsonOf(ls);
-            if (Array.isArray(arr)) {
-              const list: Object[] = arr as Object[];
-              if (list.length > 0) {
-                const first: Record<string, Object> = list[0] as Record<string, Object>;
-                const nm: Object = first['name'];
-                const id: Object = first['id'];
-                text = typeof nm === 'string' && (nm as string).length > 0 ? nm as string
-                  : (typeof id === 'string' ? id as string : '');
-              }
-            }
-          }
-          if (text.length === 0 && mode !== undefined && mode !== null) {
-            const mr: Record<string, Object> = mode as Record<string, Object>;
-            const nm2: Object = mr['name'];
-            if (typeof nm2 === 'string') {
-              text = nm2 as string;
-            }
-          }
-        } else {
-          // 运行中/暂停：显示状态标签；有模式名时优先模式名（对齐 7378 的 loopRunning 分支）
-          text = this.loopStateLabelOf(stateText);
-          if (mode !== undefined && mode !== null) {
-            const mr2: Record<string, Object> = mode as Record<string, Object>;
-            const nm3: Object = mr2['name'];
-            if (typeof nm3 === 'string' && (nm3 as string).length > 0) {
-              text = nm3 as string;
-            }
+          this.agentModelName = typeof m === 'string' ? m as string : '';
+          if (!sessionModel) {
+            this.modelName = this.agentModelName;
+            const p: Object = rec['provider_id'];
+            this.modelProvider = typeof p === 'string' ? p as string : '';
           }
         }
-        this.loopText = text;
       }
-      const cfg: http.HttpResponse = await this.send('/workspace/running-config',
-        http.RequestMethod.GET, null);
-      if (cfg.responseCode >= 200 && cfg.responseCode < 300) {
-        const v: Object = jsonOf(cfg)['approval_level'];
-        this.agentApproval = typeof v === 'string' ? v as string : '';
-        this.approval = this.agentApproval.length > 0 ? this.approvalLabelOf(this.agentApproval) : '';
-      }
+      await this.refreshLoopStatus();
+      // 审批等级：默认值 = 服务端 Agent 级 approval_level（console 的 Agent 配置页同源），
+      // 本会话若在本机选过则以会话覆盖为准（只影响这一个会话，见 ChatApprovalPrefs）
+      await this.refreshAgentApproval();
+      this.pickedApproval = await loadChatApproval(ctx, c.baseUrl, c.agentId, this.chatId);
+      this.applyApprovalValue(this.pickedApproval);
+      this.startLivePoll();
     } catch (e) {
       // 状态条属辅助信息：取不到保持「—」，不打断聊天
+    }
+  }
+
+  aboutToDisappear(): void {
+    if (this.liveTimer >= 0) {
+      clearInterval(this.liveTimer);
+      this.liveTimer = -1;
+    }
+  }
+
+  // 会话生效模型（console 同口径）：GET /chats/{id}/thinking 回的就是本会话的 provider/model
+  // （服务端把会话覆盖存在 chat.meta，见后端 chats/api.py set_session_model）。返回是否取到会话值。
+  private async readSessionModel(): Promise<boolean> {
+    if (this.chatId.length === 0) {
+      return false;
+    }
+    const tv: http.HttpResponse = await this.send(
+      `/chats/${encodeURIComponent(this.chatId)}/thinking`, http.RequestMethod.GET, null);
+    if (tv.responseCode < 200 || tv.responseCode >= 300) {
+      return false;
+    }
+    const rec: Record<string, Object> = jsonOf(tv);
+    const m: Object = rec['model'];
+    if (typeof m !== 'string' || (m as string).length === 0) {
+      return false;
+    }
+    this.modelName = m as string;
+    const p: Object = rec['provider_id'];
+    this.modelProvider = typeof p === 'string' ? p as string : '';
+    return true;
+  }
+
+  // 会话循环状态（服务端按 (chat_id, session_id) 记）：空闲显示运行方式名，运行/暂停显示状态。
+  private async refreshLoopStatus(): Promise<void> {
+    const sid: string = this.sessionId.length > 0 ? this.sessionId : this.chatId;
+    const st: http.HttpResponse = await this.send(
+      `/loops/status?chat_id=${encodeURIComponent(this.chatId)}&session_id=${encodeURIComponent(sid)}`,
+      http.RequestMethod.GET, null);
+    if (st.responseCode < 200 || st.responseCode >= 300) {
+      return;
+    }
+    const rec: Record<string, Object> = jsonOf(st);
+    const state: Object = rec['state'];
+    const stateText: string = typeof state === 'string' ? state as string : '';
+    const mode: Object = rec['mode'];
+    let text: string = '';
+    if (stateText.trim().toLowerCase() === 'idle') {
+      // 空闲：显示所选运行方式的名字（对齐 7378 loopName(selectedLoopMode)）
+      const ls: http.HttpResponse = await this.send('/loops', http.RequestMethod.GET, null);
+      if (ls.responseCode >= 200 && ls.responseCode < 300) {
+        const arr: Object = jsonOf(ls)['loops'] !== undefined ? jsonOf(ls)['loops'] : jsonOf(ls);
+        if (Array.isArray(arr)) {
+          const list: Object[] = arr as Object[];
+          if (list.length > 0) {
+            const first: Record<string, Object> = list[0] as Record<string, Object>;
+            const nm: Object = first['name'];
+            const id: Object = first['id'];
+            text = typeof nm === 'string' && (nm as string).length > 0 ? nm as string
+              : (typeof id === 'string' ? id as string : '');
+          }
+        }
+      }
+      if (text.length === 0 && mode !== undefined && mode !== null) {
+        const mr: Record<string, Object> = mode as Record<string, Object>;
+        const nm2: Object = mr['name'];
+        if (typeof nm2 === 'string') {
+          text = nm2 as string;
+        }
+      }
+    } else {
+      // 运行中/暂停：显示状态标签；有模式名时优先模式名（对齐 7378 的 loopRunning 分支）
+      text = this.loopStateLabelOf(stateText);
+      if (mode !== undefined && mode !== null) {
+        const mr2: Record<string, Object> = mode as Record<string, Object>;
+        const nm3: Object = mr2['name'];
+        if (typeof nm3 === 'string' && (nm3 as string).length > 0) {
+          text = nm3 as string;
+        }
+      }
+    }
+    this.loopText = text;
+  }
+
+  // 会话级运行态的定时轻查（4s）：循环状态与会话模型都是服务端按会话记的，别处（console / 另一台
+  // 设备）起停循环或改会话模型后，本页不重进也要跟着变 —— 只查这两项，不重取模型目录与运行配置。
+  private startLivePoll(): void {
+    if (this.liveTimer >= 0 || this.conn === null) {
+      return;
+    }
+    this.liveTimer = setInterval((): void => {
+      this.refreshLive();
+    }, 4000);
+  }
+
+  private async refreshLive(): Promise<void> {
+    if (this.conn === null) {
+      return;
+    }
+    try {
+      await this.refreshLoopStatus();
+      await this.readSessionModel();
+      // 审批等级也是服务端状态：面板没开着时跟着刷新（console 侧改过这里也要跟上）
+      if (!this.sheetShown) {
+        await this.refreshAgentApproval();
+      }
+    } catch (e) {
+      // 轻查失败不影响界面
+    }
+  }
+
+  // 读服务端 Agent 审批等级（'' = 服务端未给值）：它是没有会话覆盖时的默认值。
+  // 服务端值变化（console 的 Agent 配置页改过）→ 没有会话覆盖时显示与发送都跟着变
+  private async refreshAgentApproval(): Promise<void> {
+    const c: QpConnection | null = this.conn;
+    if (c === null) {
+      return;
+    }
+    try {
+      this.agentApproval = await fetchAgentApproval(c.baseUrl, c.token, c.agentId);
+      this.applyApprovalValue(this.pickedApproval);
+    } catch (e) {
+      // 取不到保持原显示
+    }
+  }
+
+  // 生效审批等级 = 本会话覆盖（优先）?? 服务端 Agent 默认值；'' = 服务端也没给值
+  private effectiveApproval(): string {
+    return this.pickedApproval.length > 0 ? this.pickedApproval : this.agentApproval;
+  }
+
+  // 把「本会话覆盖」落到显示与发送链路（对齐 console：sessionLevel ?? runningConfigApprovalLevel，
+  // 而 request_context.approval_level 用生效值）
+  private applyApprovalValue(override: string): void {
+    const effective: string = this.effectiveApproval();
+    setSessionApproval(effective);
+    this.approval = effective.length > 0 ? this.approvalLabelOf(effective) : '';
+  }
+
+  // 本会话选择：只改这一个会话（本机按会话落盘，见 ChatApprovalPrefs），不写服务端 Agent 默认值
+  private pickApproval(level: string): void {
+    this.pickedApproval = level;
+    this.applyApprovalValue(level);
+    const c: QpConnection | null = this.conn;
+    if (c !== null) {
+      saveChatApproval(this.getUIContext().getHostContext() as common.Context,
+        c.baseUrl, c.agentId, this.chatId, level);
     }
   }
 
@@ -395,16 +502,19 @@ export struct SessionRuntimeBar {
     }
   }
 
+  // 审批面板：「跟随 Agent（<服务端默认值>）」+ 四级。选前四项 = 本会话覆盖（只影响这一个会话）；
+  // 选「跟随 Agent」= 清掉覆盖、回到服务端 Agent 默认值（与 7378 会话面板同构）
   private approvalChoices(): SheetOption[] {
-    const follow: string = this.agentApproval.length > 0
+    const fallback: string = this.agentApproval.length > 0
       ? `${this.t($r('app.string.chat_runtime_follow_agent'))}（${this.t($r('app.string.chat_runtime_agent_default'))}：${this.approvalLabelOf(this.agentApproval)}）`
       : this.t($r('app.string.chat_runtime_follow_agent'));
-    const out: SheetOption[] = [optionOf('', follow)];
-    out.push(optionOf('STRICT', this.t($r('app.string.chat_approval_strict'))));
-    out.push(optionOf('SMART', this.t($r('app.string.chat_approval_smart'))));
-    out.push(optionOf('AUTO', this.t($r('app.string.chat_approval_auto'))));
-    out.push(optionOf('OFF', this.t($r('app.string.chat_approval_off'))));
-    return out;
+    return [
+      optionOf('', fallback),
+      optionOf('STRICT', this.t($r('app.string.chat_approval_strict'))),
+      optionOf('SMART', this.t($r('app.string.chat_approval_smart'))),
+      optionOf('AUTO', this.t($r('app.string.chat_approval_auto'))),
+      optionOf('OFF', this.t($r('app.string.chat_approval_off')))
+    ];
   }
 
   private closeSheet(): void {
@@ -431,13 +541,16 @@ export struct SessionRuntimeBar {
       const body: Record<string, Object> = {};
       body['provider_id'] = parts[0];
       body['model'] = parts[1];
-      body['scope'] = 'agent';
-      body['agent_id'] = c.agentId;
-      const resp: http.HttpResponse = await this.send('/models/active', http.RequestMethod.PUT,
+      // 会话级写入（console 同口径）：PUT /chats/{id}/model 只改本会话，不动 Agent 默认模型
+      //（此前写 /models/active scope=agent，等于把整个 Agent 的模型换掉）
+      const resp: http.HttpResponse = await this.send(
+        `/chats/${encodeURIComponent(this.chatId)}/model`, http.RequestMethod.PUT,
         JSON.stringify(body));
       if (resp.responseCode < 200 || resp.responseCode >= 300) {
         throw new Error(`HTTP ${resp.responseCode}`);
       }
+      this.modelProvider = parts[0];
+      this.modelName = parts[1];
       await this.load();
     } catch (e) {
       this.toast(`${this.t($r('app.string.chat_runtime_switch_failed'))}：${(e as Error).message}`);
@@ -531,12 +644,9 @@ export struct SessionRuntimeBar {
           current: this.pickedApproval,
           confirmPick: true,
           onConfirm: (v: string): void => {
-            this.pickedApproval = v;
-            this.approval = v.length > 0 ? this.approvalLabelOf(v)
-              : (this.agentApproval.length > 0 ? this.approvalLabelOf(this.agentApproval) : '');
-            // 随发送生效（7378 口径）：写本机单例，发送链路读取后放进 request_context
-            setSessionApproval(v);
-            this.closeSheet();
+            // 只改本会话（本机落盘 + 发送值）；面板由 OptionsSheet 的 onClose 收起，这里不再关闭，
+            // 避免"关闭动画结束后又被置位"把闸门卡在回退态（见 SheetGate 的宽限期说明）
+            this.pickApproval(v);
           },
           onClose: (): void => {
             this.closeSheet();
@@ -544,7 +654,9 @@ export struct SessionRuntimeBar {
         })
       } else if (this.sheetMode === MODE_MODEL) {
         OptionsSheet({
-          title: this.t($r('app.string.chat_runtime_pick_model')),
+          title: this.agentModelName.length > 0 && this.agentModelName !== this.modelName
+            ? `${this.t($r('app.string.chat_runtime_pick_model'))}（${this.t($r('app.string.chat_runtime_agent_default'))}：${this.agentModelName}）`
+            : this.t($r('app.string.chat_runtime_pick_model')),
           options: this.options(),
           // 当前生效项打勾（与 SheetOption.value 同形：providerId||modelId）
           current: `${this.modelProvider}||${this.modelName}`,

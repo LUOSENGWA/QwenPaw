@@ -130,15 +130,15 @@ export async function copyToPasteboard(text?: string) {
   let pasteData = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
   let systemPasteboard = pasteboard.getSystemPasteboard();
   await systemPasteboard.setData(pasteData).then((data) => {
-    // 使用新的Toast API
+    // 使用新的Toast API（Toast 文案改走宿主应用的字符串表：上游写死中文，英文界面下也会弹中文）
     promptAction.showToast({
-      message: '复制成功',
+      message: $r('app.string.markdown_copy_ok'),
       duration: 2000
     });
   }).catch((err: BusinessError) => {
-    // 使用新的Toast API
+    // 使用新的Toast API（同上：文案走宿主字符串表，错误详情保留在串尾）
     promptAction.showToast({
-      message: '复制异常' + err.message,
+      message: $r('app.string.markdown_copy_failed') + ' ' + err.message,
       duration: 2000
     });
   });

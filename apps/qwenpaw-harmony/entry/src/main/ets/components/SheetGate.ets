@@ -20,18 +20,25 @@ import { uiMaterial } from '@kit.ArkUI';
 export class SheetGate {
   private queued: boolean = false;
   private closing: boolean = false;
+  private closingAt: number = 0;
 
   // 回退动画开始：onWillDisappear（框架主导的返回键/下拉/遮罩关闭）与程序化关闭都走这里
   beginClose(): void {
     this.closing = true;
+    this.closingAt = Date.now();
   }
 
-  // 请求打开：true = 调用方可立即置 isShow=true；false = 已排队，等 onDisappear 再打开
+  // 请求打开：true = 调用方可立即置 isShow=true；false = 已排队，等 onDisappear 再打开。
+  // 宽限期自愈：「回退中」只为了避免在回退动画期间拉起新面板（真机实测框架回写约 286ms 后才到），
+  // 而面板回退动画不会超过几百毫秒 —— 超过宽限期仍停在 closing，只可能是"关闭动画结束后又被置位"
+  // 的残留（此时排队的打开请求永远等不到 onDisappear），按可开处理，不再把后续打开卡死。
   request(): boolean {
-    if (this.closing) {
+    if (this.closing && Date.now() - this.closingAt < CLOSE_GRACE_MS) {
       this.queued = true;
       return false;
     }
+    this.closing = false;
+    this.queued = false;
     return true;
   }
 
@@ -43,6 +50,9 @@ export class SheetGate {
     return q;
   }
 }
+
+// 回退宽限期（ms）：小于它才认为"回退动画可能还在跑"，超过即视为残留状态
+const CLOSE_GRACE_MS: number = 700;
 
 /*
  * 工作台各模块半模态的统一外观与回调（对齐官方示例《半模态设置系统材质》示例 10）：

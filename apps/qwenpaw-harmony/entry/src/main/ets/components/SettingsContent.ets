@@ -5,7 +5,7 @@
  */
 
 import { common, Configuration, ConfigurationConstant } from '@kit.AbilityKit';
-import { emitter } from '@kit.BasicServicesKit';
+import { pushRoute, topRouteIs } from '../services/NavPush';
 import { ThemeManager, ThemeSnapshot, ThemePreset, THEME_PRESETS } from '../theme/ThemeManager';
 import { MinePage } from '../components/MinePage';
 import {
@@ -17,8 +17,7 @@ import { syncConsoleThemeToManager } from '../services/ConsoleTheme';
 import { UiTokens } from '../theme/UiTokens';
 import { SheetGate, moduleSheetOptions } from '../components/SheetGate';
 import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
-import { CONN_CHANGE_EVENT, CONN_STORE_EVENT } from '../components/WorkbenchTab';
-import { ScanRouteParam, StackOnlyParam, requestTab } from '../services/AppEvents';
+import { notifyConnectionStoreChange, ScanRouteParam, StackOnlyParam, requestTab } from '../services/AppEvents';
 import { verifyConnection, describeConnectError } from '../services/ConnectionService';
 import {
   PlatformRelayNode, PlatformRelayQuota, PlatformRelayStatus, RELAY_CONNECTED,
@@ -26,7 +25,6 @@ import {
 } from '../services/PlatformRelay';
 import { getPlatformAccessToken, PLATFORM_BASE_URL, PlatformSession, loadPlatformSession, platformLogout } from '../services/PlatformSession';
 import { RelayNodesSheet } from '../components/RelayNodesSheet';
-import { LengthMetrics } from '@kit.ArkUI';
 
 // 设置内容（半模态弹窗内容）：由 Index 的 bindSheet 承载（⋮ 菜单打开）——不再是一个
 // NavDestination 页面；页内二级入口（模块页等）仍用传入的导航栈 push。
@@ -34,6 +32,8 @@ import { LengthMetrics } from '@kit.ArkUI';
 export struct SettingsContent {
   // 外层导航栈（页内「安全」等入口要 push 二级页）；由承载方传入
   stack: NavPathStack | null = null;
+  // 内容自带「设置」标题（半模态弹窗用）；页面形态由标题栏出标题，传 false
+  showTitle: boolean = true;
   @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
   @State isDark: boolean = false;
   @State conns: QpConnection[] = [];
@@ -129,7 +129,7 @@ export struct SettingsContent {
       return;
     }
     const param: StackOnlyParam = { stack: stack };
-    stack.pushPath({ name: 'platform-login', param: param });
+    pushRoute(stack, 'platform-login', param);
   }
 
   // 「退出 Platform」：二次确认（对齐 7378 me.tsx confirmPlatformLogout 的文案口径）
@@ -177,10 +177,10 @@ export struct SettingsContent {
     this.isDark = newConfig.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
   }
 
-  // 连接存储变更广播：CONN_CHANGE_EVENT 让其它 tab 刷新；CONN_STORE_EVENT 让会话页重取连接并复核
+  // 连接存储变更广播：CONN_STORE_EVENT 让会话页重取连接并复核；连接本身的变更广播
+  // （CONN_CHANGE_EVENT，让其它 tab 刷新）由 ConnectionStore 在保存/切换/移除时统一发出
   private broadcastConnChange(): void {
-    emitter.emit(CONN_CHANGE_EVENT);
-    emitter.emit(CONN_STORE_EVENT);
+    notifyConnectionStoreChange();
   }
 
   private async reloadConns(ctx: common.UIAbilityContext): Promise<void> {
@@ -188,15 +188,6 @@ export struct SettingsContent {
     this.conns = list;
     const cur: QpConnection | null = await loadConnection(ctx);
     this.currentKey = cur !== null ? connectionKey(cur) : '';
-  }
-
-  private currentThemeName(): string {
-    for (const p of THEME_PRESETS) {
-      if (p.id === this.theme.presetId) {
-        return p.name;
-      }
-    }
-    return '';
   }
 
   // 与控制台同步：开 → 立即取一次色；关 → 回落本地预设
@@ -301,12 +292,12 @@ export struct SettingsContent {
   private openModule(key: string): void {
     if (this.stack !== null) {
       const param: Record<string, string> = { 'key': key };
-      this.stack.pushPath({ name: 'module', param: param });
+      pushRoute(this.stack, 'module', param);
     }
   }
 
   private openScan(): void {
-    if (this.stack === null) {
+    if (this.stack === null || topRouteIs(this.stack, 'scan')) {
       return;
     }
     const param: ScanRouteParam = { stack: this.stack };
@@ -468,7 +459,7 @@ export struct SettingsContent {
       return;
     }
     const param: StackOnlyParam = { stack: this.stack };
-    this.stack.pushPath({ name: 'platform-deploy', param: param });
+    pushRoute(this.stack, 'platform-deploy', param);
   }
 
   // 重新连接当前工作区（原首页连接卡的「重新连接」入口迁到此处，与连接管理同页）
@@ -835,11 +826,13 @@ export struct SettingsContent {
       Scroll() {
         Column() {
           // 弹窗（半模态）：顶部留出系统关闭叉（✕）与拖拽条，标题也放进来
-          Text($r('app.string.menu_settings'))
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .width('100%')
-            .margin({ bottom: 4 })
+          if (this.showTitle) {
+            Text($r('app.string.menu_settings'))
+              .fontSize(20)
+              .fontWeight(FontWeight.Bold)
+              .width('100%')
+              .margin({ bottom: 4 })
+          }
           // 账户卡（对齐 RN me.tsx profile：当前连接 + Agent）
           Row() {
             Column() {

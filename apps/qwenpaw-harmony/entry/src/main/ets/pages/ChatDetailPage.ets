@@ -17,12 +17,15 @@ import {
   curves,
 } from '@kit.ArkUI';
 import { QpConnection, loadConnection } from '../services/ConnectionStore';
-import { sessionApproval, takeLoopCommand, applyLoopCommand } from '../services/SessionControls';
+import { sessionApproval, setSessionApproval, takeLoopCommand, applyLoopCommand } from '../services/SessionControls';
 import { PendingTurn, loadPendingTurn, savePendingTurn, clearPendingTurn } from '../services/PendingTurn';
+import { fetchAgentApproval } from '../services/AgentApproval';
+import { loadChatApproval } from '../services/ChatApprovalPrefs';
 import {
   DisplayTurn, DisplayMessage, DisplayPart, ChatSnapshot, fetchChatMessages, streamChat, reconnectChat, stopChat,
   ChatStreamHandle, ChatInputPart, UploadResult, uploadAttachment, CHAT_CLOSED_EVENT,
-  ResponseBlock, responseBlocks, answerIndexOf, resultMediaOf, textOfParts, partsTextLen
+  ResponseBlock, responseBlocks, textOfParts, partsTextLen,
+  toolMediaParts, mergeMediaParts, turnFilesOf
 } from '../services/ChatDetailService';
 import { pickFiles, removeTemp, PickedFile } from '../services/AttachmentPicker';
 import { StreamDelta } from '../services/SseParser';
@@ -30,17 +33,27 @@ import { ApprovalInfo, fetchApprovals, approveRequest, denyRequest } from '../se
 import { fetchChats, ChatInfo, pinChat, setChatArchived, deleteChat } from '../services/ChatsService';
 import { ApprovalCard } from '../components/ApprovalCard';
 import { SessionRuntimeBar } from '../components/SessionRuntimeBar';
-import { ChatRow, ConversationRow, mergeToolMessages } from '../components/ChatRows';
+import { ChatRow, ConversationRow, rowOf, rowHasVisibleContent, mergeToolMessages } from '../components/ChatRows';
 import { ChatSkeleton } from '../components/ChatSkeleton';
+import { areaWidthOf, wideClampW } from '../theme/Breakpoints';
 import { ThemeManager, ThemeSnapshot, ThemeListener } from '../theme/ThemeManager';
 import { UiTokens, pxPerVp } from '../theme/UiTokens';
 import { blendHex } from '../theme/Accent';
 import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
+import { slideCoverTransition } from '../services/NavPush';
 
 @Builder
 export function ChatDetailPageBuilder(_name: string, param: Object) {
   ChatDetailPage({ params: param })
 }
+
+// 过程组展开/收起、行插入/消失的补间时长（对齐 tab 切换的 240ms 档，卡片增删是"放大/缩小"而不是瞬跳）
+const EXPAND_ANIM_MS: number = 220;
+// 「一键回到底部」按钮：直径与出现/隐藏过渡（对齐 console 那套 0.2s 过渡）
+const BOTTOM_FAB_SIZE: number = 36;
+const BOTTOM_FAB_ANIM_MS: number = 200;
+// 输入胶囊之上运行状态条的高度预留（SessionRuntimeBar 一行芯片）
+const RUNTIME_ROW_RESERVE: number = 28;
 
 // 待发附件（已上传成功，发送时转成 content 分片）
 interface PendingAttachment {
@@ -59,10 +72,19 @@ export struct ChatDetailPage {
   // 置顶态（标题栏菜单用）：会话详情接口不回该字段，由会话列表里本会话那一项取得
   @State chatPinned: boolean = false;
   private stack: NavPathStack | null = null;
+  // 二级页水平覆盖转场的位移（百分比）：由 NavPush.slideCoverTransition 驱动
+  @State pageX: string = '0%';
   @State @Watch('onTurnsChanged') turns: DisplayTurn[] = [];
-  // 展开中的过程组（键 = turnId:块序号）：扁平化后组内行是页面 List 的独立项，
-  // 因此「哪一组展开」必须由页面持有，而不能留在组卡组件内部
+  // 过程组展开/收起：扁平化后组内行是页面 List 的独立项，因此「哪一组展开」必须由页面持有，
+  // 而不能留在组卡组件内部。默认展开态 = 活动组展开、其余收起（见 rows()）；两个列表只记
+  // 「用户手动改过」的组（互斥），用户在默认态之外的选择以用户为准。
   @State expandedGroups: string[] = [];
+  @State collapsedGroups: string[] = [];
+  // 各过程组的默认展开态（键 → 是否活动组），rows() 每次重建写回；组头点击据此判断当前态
+  private groupGen: Map<string, boolean> = new Map<string, boolean>();
+  // 在途回合的行对象（键 → 实例）：流式期间复用同一实例并就地赋新值，行组件经 @ObjectLink
+  // 原地更新（不重建子树、不闪屏）；回合落定后由 rows() 逐键覆盖为新实例，此处旧实例自然弃用
+  private liveRows: Map<string, ConversationRow> = new Map<string, ConversationRow>();
   @State draft: string = '';
   @State sending: boolean = false;
   @State attachments: PendingAttachment[] = [];   // 已上传待发送的附件
@@ -83,6 +105,9 @@ export struct ChatDetailPage {
   private userId: string = '';
   // 在途回合的本地记录（对齐 7378 pendingChat：切走/重挂载后自己那条不丢）
   private pending: PendingTurn | null = null;
+  // 当前流式增量要并入的回合 id：发送时指向本地回显回合，快照出现同一条用户消息后改指
+  // 服务端那条回合（服务端回合 id 与本地 turn_<ts> 不同，故不能只认 id，须按用户文本对接）
+  private liveTurnId: string = '';
   private pollTimer: number = -1;
 
   // 本会话待审批：按 root_session_id 归属过滤（与 RN 同口径）
@@ -120,10 +145,6 @@ export struct ChatDetailPage {
       this.errorMsg = this.t($r('app.string.approval_failed'));
     }
   }
-  private streamMsgId: string = '';
-  // 当前 message 流的 messageId（对齐 7378 store.send/reconnectChat 的 activeMessageId：
-  // messageId 变化即视为新一段文本，重置而不是续写）
-  private liveAnswerMsgId: string = '';
   private conn: QpConnection | null = null;
   private themeListener: ThemeListener | null = null;
 
@@ -276,6 +297,14 @@ export struct ChatDetailPage {
     .justifyContent(FlexAlign.Center)
   }
 
+  // 大屏（平板/电脑）正文列限宽：官方《页面布局场景》缩进布局 —— 正文列居中、两侧留白；
+  // 分栏态下本页位于右栏（本就窄），此限宽只对超宽窗口（PC）生效；实现见 theme/Breakpoints
+  @State pageW: number = 0;
+
+  private onChatArea = (_old: Area, now: Area): void => {
+    this.pageW = areaWidthOf(now, this.pageW);
+  };
+
   aboutToAppear(): void {
     const rec: Record<string, Object> = this.params as Record<string, Object>;
     const id: Object = rec['chatId'];
@@ -353,124 +382,235 @@ export struct ChatDetailPage {
     this.isDark = newConfig.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
   }
 
-  // 在途回合对账（对齐 7378 loadChat）：历史里已有同文本的用户消息且当前不在跑 → 清本地记录；
-  // 否则把在途那条合并回列表（已合并过则跳过），保证"切走再回来自己那条不丢"。
-  private async reconcilePending(running: boolean): Promise<void> {
+  // 在途记录（落盘）读取：只在进页面时读一次（重启/重新进页面后靠它把"自己那条"接回来）
+  private async loadPendingRecord(): Promise<PendingTurn | null> {
+    const conn: QpConnection | null = this.conn;
+    if (conn === null) {
+      return null;
+    }
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    return await loadPendingTurn(ctx, conn.baseUrl, conn.agentId, this.chatId);
+  }
+
+  // 发送用的审批等级落定：模块级单例是全局的，页面上叠了别的会话页再退回本页时，单例可能还停在
+  // 上一页的值（会被带进本页的发送）。本页每次进页面/回到前台都按**本会话生效值**重设一次：
+  // 本会话覆盖（本机，见 ChatApprovalPrefs）优先，没有则用服务端 Agent 级 approval_level。
+  private async applySessionApproval(): Promise<void> {
     const conn: QpConnection | null = this.conn;
     if (conn === null) {
       return;
     }
-    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    const rec: PendingTurn | null = await loadPendingTurn(ctx, conn.baseUrl, conn.agentId, this.chatId);
-    if (rec === null) {
-      this.pending = null;
+    try {
+      const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      const override: string = await loadChatApproval(ctx, conn.baseUrl, conn.agentId, this.chatId);
+      setSessionApproval(override.length > 0 ? override
+        : await fetchAgentApproval(conn.baseUrl, conn.token, conn.agentId));
+    } catch (e) {
+      setSessionApproval('');
+    }
+  }
+
+  private dropPendingRecord(): void {
+    const c: QpConnection | null = this.conn;
+    if (c === null) {
       return;
     }
-    if (lastUserTextOf(this.turns) === rec.text && !running) {
-      await clearPendingTurn(ctx, conn.baseUrl, conn.agentId, this.chatId);
-      this.pending = null;
-      return;
-    }
-    this.pending = rec;
+    clearPendingTurn(getContext(this) as common.UIAbilityContext, c.baseUrl, c.agentId, this.chatId);
+  }
+
+  private turnById(id: string): DisplayTurn | null {
     for (const t of this.turns) {
-      if (t.id === rec.turnId) {
-        return;
+      if (t.id === id) {
+        return t;
       }
     }
+    return null;
+  }
+
+  // 服务端快照里是否已有这条用户消息（返回其回合下标，-1 = 还没有）。
+  // 判据只认服务端下发的列表：不能用"本地列表最后一条用户消息"来判断——
+  // 本地那条回显文本就是它自己，用本地列表判断会把自己判成"服务端已收到"而提前退役。
+  private serverEchoIndex(list: DisplayTurn[], text: string): number {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const u: DisplayMessage | null = list[i].user;
+      if (u !== null && textOfParts(u.parts) === text) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  // 服务端快照落地的唯一出口（轮询 / 重取 / 进页面三条路径共用）。取数是异步的，
+  // 「取数在途期间用户刚好按下发送」这段窗口里落地的快照若直接替换 turns，会把本地回显整条抹掉
+  // （真机实测：长会话一次取数近 1s，命中窗口不小；表现为"看不到自己刚发的那条，等这轮跑完才出现"）。
+  //   ① 服务端已收下这条 → 回显退役（流式增量改并入服务端那条回合），落盘的在途记录作废；
+  //   ② 服务端还没有 → 保留本地在途回合接在快照末尾（自己发的那条绝不丢；没有本地回合时按记录重建）。
+  private settleSnapshot(list: DisplayTurn[], rec: PendingTurn | null): DisplayTurn[] {
+    if (rec === null) {
+      return list;
+    }
+    const at: number = this.serverEchoIndex(list, rec.text);
+    if (at >= 0) {
+      this.liveTurnId = list[at].id;
+      this.pending = null;
+      this.dropPendingRecord();
+      return list;
+    }
+    const found: DisplayTurn | null = this.turnById(rec.turnId);
+    const echo: DisplayTurn = found !== null ? found : this.echoTurnOf(rec);
+    this.liveTurnId = echo.id;
+    this.pending = rec;
+    // 快照尾部常带一条「无用户消息的在途回合」（服务端对同一次运行的视图）：它与本地回显
+    // 是同一条 run 的两份视图，同时挂上会重复渲染，故以本地那份为准，去掉快照尾部的裸回合。
+    const arr: DisplayTurn[] = list.slice();
+    while (arr.length > 0 && arr[arr.length - 1].user === null) {
+      arr.pop();
+    }
+    arr.push(echo);
+    return arr;
+  }
+
+  // 按在途记录重建本地回显回合（记录里只留了文本与回合 id，重启/重新进页面时照它还原）
+  private echoTurnOf(rec: PendingTurn): DisplayTurn {
     const up: DisplayPart = { type: 'text', text: rec.text };
     const um: DisplayMessage = { id: `u_${rec.turnId}`, role: 'user', kind: 'message', parts: [up] };
-    const lt: DisplayTurn = { id: rec.turnId, user: um, responses: [], pending: true };
-    const arr: DisplayTurn[] = this.turns.slice();
-    arr.push(lt);
-    this.turns = arr;
+    return { id: rec.turnId, user: um, responses: [], pending: true };
   }
 
   // 会话展平成行序列（一行 = 一个 ListItem 的载荷）。顺序：用户气泡 → 响应分段（消息段 / 步骤组）
   // → 待发占位（仅当该回合还没出可见文本）→ 该回合工具产出媒体。
+  // 行对象复用规则：在途回合的行复用同一实例（行组件用 @ObjectLink 观察它 ⇒ 流式期间原地更新，
+  // 不重建子树）；已完结回合的行每次新建，没有观察者、不产生无谓刷新。
   private rows(): ConversationRow[] {
     const out: ConversationRow[] = [];
     for (const turn of this.turns) {
       const tid: string = turn.id;
       if (turn.user !== null) {
         const u: DisplayMessage = turn.user;
-        out.push({ key: `u:${tid}`, kind: 'user', turnId: tid, messages: [u], parts: [],
-          pending: turn.pending, last: false, generating: false });
+        out.push(this.rowFor(`u:${tid}`, 'user', tid, turn.pending, [u], [], false, false, false));
       }
       // 响应按 console 口径分段（responseBlocks，语义不改）：message 段逐段可见、其余收进 steps 组
       const blocks: ResponseBlock[] = responseBlocks(turn.responses, turn.pending);
-      // 活动组 = 末块为 steps 的那一组（对齐 console findActiveStepBlockIndex：末块是 message 则无活动组）：
-      // 只有活动组处于「生成中」，其状态文案与转圈随生成推进；其余组一律视为已完成。
-      const activeStep: number = turn.pending && blocks.length > 0
-        && blocks[blocks.length - 1].kind === 'steps' ? blocks.length - 1 : -1;
+      // 活动组 = 最后一个步骤组（对齐 console HostBubbles：默认展示口径下
+      // statusStepBlockIndex = findLastStepBlockIndex(messageBlocks)，即只认"最后一个步骤组"，
+      // 其后即使还跟了文本段也仍是它）：只有活动组处于「生成中」，其状态文案与转圈随生成推进；
+      // 其余组一律视为已完成（getCollapsedGroupStatus：非活动组 → Completed）。
+      let activeStep: number = -1;
+      if (turn.pending) {
+        for (let i = blocks.length - 1; i >= 0; i--) {
+          if (blocks[i].kind === 'steps') {
+            activeStep = i;
+            break;
+          }
+        }
+      }
       for (let i = 0; i < blocks.length; i++) {
         const b: ResponseBlock = blocks[i];
-            // 键 = 回合 + 块序号（结构键，不含文本长度/片段等指纹）：块内容是流式增长的，
-        // 若把指纹放进键，每次 flush 键都变 → 键变化即重建子树（闪烁 + 打断滚动/展开态）
+        // 键 = 回合 + 块序号（结构键，不含内容指纹）：内容变化靠行对象原地更新，键变化即重建子树
         if (b.kind === 'message') {
-          out.push({ key: `m:${tid}:${i}`, kind: 'message', turnId: tid, messages: b.messages, parts: [],
-            pending: turn.pending, last: !turn.pending, generating: false });
+          if (!messagesHaveContent(b.messages)) {
+            continue;   // 空响应段（无可见文本 / 无媒体 / 无错误）不出行，否则渲染成一张空白气泡卡
+          }
+          out.push(this.rowFor(`m:${tid}:${i}`, 'message', tid, turn.pending, b.messages, [],
+            !turn.pending, false, false));
         } else {
           // 过程组 = 组头一条 +（展开时）组内每行各一条独立列表项：
           // 一行一个 ListItem 才能吃到 List 的虚拟化（此前整组一个 item，数百行一次性构建）
           const gk: string = `${tid}:${i}`;
-          const expanded: boolean = (i === activeStep && turn.pending)
-            || this.expandedGroups.indexOf(gk) >= 0;
-          out.push({ key: `sh:${gk}`, kind: 'stepsHeader', turnId: tid, messages: b.messages,
-            parts: [], pending: turn.pending, last: false, generating: i === activeStep,
-            expanded: expanded, groupKey: gk });
+          const gen: boolean = i === activeStep;
+          // 默认展开态对齐 console getCollapsedStepPresentation（生成中 → defaultOpen = true，其余 false）：
+          // 活动组默认展开、已完成的组默认收起；用户手动开合过的那一组以用户选择为准。
+          // 默认态另记一份到 groupGen（组头点击时按它判断"点的是收起还是展开"，
+          // 已完结回合的行不在 liveRows 里，不能从行对象读）。
+          this.groupGen.set(gk, gen);
+          const expanded: boolean = this.expandedGroups.indexOf(gk) >= 0 ? true
+            : (this.collapsedGroups.indexOf(gk) >= 0 ? false : gen);
+          const head: ConversationRow = this.rowFor(`sh:${gk}`, 'stepsHeader', tid, turn.pending,
+            b.messages, [], false, gen, false);
+          head.expanded = expanded;
+          head.groupKey = gk;
+          out.push(head);
           if (expanded) {
             const procs: DisplayMessage[] = mergeToolMessages(b.messages);
             for (let pi = 0; pi < procs.length; pi++) {
-              out.push({ key: `pr:${gk}:${pi}`, kind: 'proc', turnId: tid,
-                messages: [procs[pi]], parts: [], pending: turn.pending, last: false,
-                generating: i === activeStep });
+              out.push(this.rowFor(`pr:${gk}:${pi}`, 'proc', tid, turn.pending, [procs[pi]], [],
+                pi === procs.length - 1, gen, false));
             }
           }
         }
       }
       if (turn.pending && !this.turnHasStreamText(turn)) {
-        out.push({ key: `p:${tid}`, kind: 'pending', turnId: tid, messages: [], parts: [],
-          pending: true, last: false, generating: false });
+        out.push(this.rowFor(`p:${tid}`, 'pending', tid, true, [], [], false, false, false));
       }
-      // 工具产出媒体（截图等）挂在整回合末尾（对齐 7378 buildTurn 的 resultMedia）
-      const media: DisplayPart[] = resultMediaOf(turn.responses, answerIndexOf(turn.responses));
+      // 回合文件清单挂在末尾：工具产出的文件（按 file_path 取，含相对路径与任意扩展名）+
+      // 工具媒体分片（截图等），对齐 console 的 ResponseArtifactList
+      const media: DisplayPart[] = turnFilesOf(turn.responses);
       if (media.length > 0) {
-        out.push({ key: `x:${tid}`, kind: 'media', turnId: tid, messages: [], parts: media,
-          pending: false, last: false, generating: false });
+        out.push(this.rowFor(`x:${tid}`, 'media', tid, false, [], media, false, false, false));
       }
     }
     return out;
   }
 
-  // 过程组展开/收起切换（组头点击）
+  // 取该键的行对象：在途回合复用同一实例并就地赋新值；已完结回合每次新建
+  private rowFor(key: string, kind: string, turnId: string, pending: boolean,
+    messages: DisplayMessage[], parts: DisplayPart[], last: boolean, generating: boolean,
+    expanded: boolean): ConversationRow {
+    let r: ConversationRow | undefined = this.liveRows.get(key);
+    if (r === undefined) {
+      r = rowOf(kind, key, turnId, messages, parts);
+      if (pending) {
+        this.liveRows.set(key, r);
+      }
+    }
+    r.kind = kind;
+    r.turnId = turnId;
+    r.messages = messages;
+    r.parts = parts;
+    r.pending = pending;
+    r.last = last;
+    r.generating = generating;
+    r.expanded = expanded;
+    return r;
+  }
+
+  // 过程组展开/收起切换（组头点击）：包在显式动画里，展开/收起是"放大/缩小"而不是瞬跳。
+  // 当前实际展开态 = 用户覆盖（优先）> 默认态（活动组展开）；据此把该组记进互斥的
+  // expandedGroups / collapsedGroups（用户选择覆盖默认态，对齐 console LazyAccordion 受控手风琴）。
   private toggleSteps(gk: string): void {
-    const next: string[] = this.expandedGroups.slice();
-    const at: number = next.indexOf(gk);
-    if (at >= 0) {
-      next.splice(at, 1);
+    const open: string[] = this.expandedGroups.slice();
+    const closed: string[] = this.collapsedGroups.slice();
+    const isOpen: boolean = this.expandedGroups.indexOf(gk) >= 0 ? true
+      : (this.collapsedGroups.indexOf(gk) >= 0 ? false : this.groupGen.get(gk) === true);
+    if (isOpen) {
+      const a: number = open.indexOf(gk);
+      if (a >= 0) {
+        open.splice(a, 1);
+      }
+      if (closed.indexOf(gk) < 0) {
+        closed.push(gk);
+      }
     } else {
-      next.push(gk);
+      const b: number = closed.indexOf(gk);
+      if (b >= 0) {
+        closed.splice(b, 1);
+      }
+      if (open.indexOf(gk) < 0) {
+        open.push(gk);
+      }
     }
-    this.expandedGroups = next;
+    this.getUIContext().animateTo({ duration: EXPAND_ANIM_MS, curve: Curve.EaseInOut }, (): void => {
+      this.expandedGroups = open;
+      this.collapsedGroups = closed;
+    });
   }
 
-  // 除末行外的全部行（进 ForEach，键稳定 ⇒ 不重建）
-  private doneRows(): ConversationRow[] {
-    const all: ConversationRow[] = this.rows();
-    if (all.length === 0) {
-      return all;
-    }
-    return all.slice(0, all.length - 1);
-  }
-
-  // 末行（挂在 ForEach 之外直接构造组件）：流式期间"正在长的那一行"就在末位，直接挂才能
-  // 每帧经 @Prop 拿到新行、按常规更新路径刷新（ForEach 键不变则子组件参数也不更新 → 冻帧）
-  private liveRow(): ConversationRow | null {
-    const all: ConversationRow[] = this.rows();
-    if (all.length === 0) {
-      return null;
-    }
-    return all[all.length - 1];
+  // 全部行（都进 ForEach，键稳定 ⇒ 不重建）。为什么不再把末行放在 ForEach 之外：新增响应段时，
+  // "原来在外的末行"会移进 ForEach —— 对 ArkUI 而言是**销毁 + 重建**，那一行会闪一下（有过渡动画
+  // 时更明显）。行数据经 @Observed/@ObjectLink 原地更新，键不变即不重建 subtree，故放在 ForEach 内
+  // 同样能逐字刷新，且不会再出现"末行换位置"的重建。
+  private allRows(): ConversationRow[] {
+    return this.rows();
   }
 
   // 该回合是否已有可见的流式文本段（没有则出「正在生成」占位）
@@ -506,12 +646,18 @@ export struct ChatDetailPage {
       const conn: QpConnection = this.conn;
       const snap: ChatSnapshot = await fetchChatMessages(conn.baseUrl, conn.token, conn.agentId,
         this.chatId);
+      // 取数期间用户按了发送/挂上了流：这份快照的尾部已过时（缺刚发的那条），丢弃本次对齐，
+      // 由下一拍或流结束时的重取接手（守卫只写在取数之前会漏掉这段窗口）
+      if (this.sending || this.stream !== null) {
+        return;
+      }
       if (snap.running && this.stream === null) {
         this.attachRunningStream();
         return;
       }
-      if (this.turnsDigest(snap.turns) !== this.turnsDigest(this.turns)) {
-        this.turns = snap.turns;
+      const next: DisplayTurn[] = this.settleSnapshot(snap.turns, this.pending);
+      if (this.turnsDigest(next) !== this.turnsDigest(this.turns)) {
+        this.turns = next;
       }
     } catch (e) {
       // 静默刷新失败不影响页面
@@ -528,8 +674,7 @@ export struct ChatDetailPage {
       const conn: QpConnection = this.conn;
       const snap: ChatSnapshot = await fetchChatMessages(conn.baseUrl, conn.token, conn.agentId,
         this.chatId);
-      this.turns = snap.turns;
-      await this.reconcilePending(snap.running);
+      this.turns = this.settleSnapshot(snap.turns, this.pending);
       this.scrollBottom();
     } catch (e) {
       // 重取失败：保留本地流式内容，下一轮轮询再对齐
@@ -543,7 +688,8 @@ export struct ChatDetailPage {
       return;
     }
     this.sending = true;
-    this.liveAnswerMsgId = '';
+    // 重连的增量并入列表末尾那条在途回合（服务端在跑的这一次 run 就挂在它上面）
+    this.liveTurnId = this.turns.length > 0 ? this.turns[this.turns.length - 1].id : '';
     this.stream = reconnectChat(conn.baseUrl, conn.token, conn.agentId,
       this.sessionId.length > 0 ? this.sessionId : this.chatId, this.userId,
       (delta: StreamDelta): void => {
@@ -573,17 +719,23 @@ export struct ChatDetailPage {
         return;
       }
       this.conn = conn;
+      this.applySessionApproval();
       this.refreshApprovals();
       this.loadChatMeta(conn);
       const snap: ChatSnapshot = await fetchChatMessages(conn.baseUrl, conn.token, conn.agentId,
         this.chatId);
-      this.turns = snap.turns;
+      // 在途回显（自己发出去、服务端还没收下的那条）按落盘记录对齐：
+      // 服务端已有 → 退役；还没有 → 接在快照末尾（进页面/重进都靠这一步不丢）
+      this.pending = await this.loadPendingRecord();
       // 身份优先取列表项带来的 user_id（详情接口不返回该字段）；详情里若有则以它为准
       if (snap.userId.length > 0) {
         this.userId = snap.userId;
       }
-      await this.reconcilePending(snap.running);
+      this.turns = this.settleSnapshot(snap.turns, this.pending);
       this.stickBottom = true;
+      if (this.listShown) {
+        this.landAtBottom();
+      }
       if (snap.running) {
         // 服务端上一轮仍在跑（本机离开后回来 / 从 Console 发起）：重连该流实时呈现剩余内容
         // （对齐 7378 app/chat/[id].tsx：loadChat 回 running 时调用 reconnectChat）
@@ -635,6 +787,7 @@ export struct ChatDetailPage {
       this.settleTimer = -1;
       this.listSettled = true;
       this.listShown = true;
+      this.landAtBottom();
     }, 220);
   }
 
@@ -647,9 +800,12 @@ export struct ChatDetailPage {
       this.settleCapTimer = -1;
       this.listSettled = true;
       this.listShown = true;
+      this.landAtBottom();
     }, 1200);
   }
   private stickBottom: boolean = true;
+  // 列表是否停在末尾（控制「一键回到底部」按钮的进出场）；初值 true = 刚进来就是底部
+  @State atBottom: boolean = true;
   // 手指是否正按在列表上：程序化 scrollEdge 不产生触摸事件，故用触摸态区分来源，
   // 不用时间型守卫（上轮的时间守卫在流式期间几乎常开 → 用户拖动被一直忽略 → 又被拽回底部）
   private userTouching: boolean = false;
@@ -664,13 +820,48 @@ export struct ChatDetailPage {
     }
     setTimeout((): void => {
       this.scroller.scrollEdge(Edge.Bottom);
+      this.syncBottomFab();
     }, 40);
   }
 
-  // 列表初始落点 = 末项：列表创建即停在底部，不靠多次 scrollEdge 追（追的过程就是跳变）
+  // 开页面时把视口钉到底部。为什么要显式钉：List 的 initialIndex 只在**列表创建那一刻**生效，
+  // 而长会话历史是分批到达的（解析慢时 1.2s 兜底会先放行列表）——数据后到就停在列表顶部，
+  // 观感即"打开聊天页停在最上面"。列表首次呈现与历史落定两条路径各补一次到底。
+  private landAtBottom(): void {
+    this.stickBottom = true;
+    setTimeout((): void => {
+      this.scroller.scrollEdge(Edge.Bottom);
+      this.syncBottomFab();
+    }, 60);
+  }
+
+  // 「一键回到底部」按钮（对齐 console 用的 SDK 里的 BubbleList/ScrollToBottom）：
+  // 判据 = 滚动位置是否真的在末尾（Scroller.isAtEnd），与 console 的"距底 >10px 才出现"同义；
+  // 点击后平滑回到底并隐藏；出现/隐藏是 200ms 位移 + 透明度过渡（隐藏时下移自身高度、且不接收点击）。
+  private syncBottomFab(): void {
+    const atEnd: boolean = this.scroller.isAtEnd();
+    if (atEnd !== this.atBottom) {
+      this.atBottom = atEnd;
+    }
+  }
+
+  private jumpToBottom(): void {
+    // 回到底部同时恢复"跟随"（与划到底自动恢复同一口径）
+    this.stickBottom = true;
+    this.scroller.scrollToIndex(this.initialRowIndex(), true, ScrollAlign.END);
+    this.syncBottomFab();
+  }
+
+  // 按钮底距：让开悬浮输入胶囊 + 其上方的运行状态条（两者高度见 UiTokens / runtimeRow）
+  private bottomFabOffset(): number {
+    return UiTokens.chatComposerBottomMargin + UiTokens.chatComposerHeight + 1
+      + UiTokens.chatRuntimeRowGap + RUNTIME_ROW_RESERVE + 10;
+  }
+
+  // 列表初始落点 = 末尾留白项：List 创建即停在**最底部**（末条内容的底边贴着末尾留白，
+  // 留白已含悬浮输入条 + 其上的运行状态条 ⇒ 末条不被遮挡）。不靠多次 scrollEdge 追底部。
   private initialRowIndex(): number {
-    const live: number = this.liveRow() !== null ? 1 : 0;
-    return this.doneRows().length + live + 1;
+    return this.allRows().length + 1;
   }
 
   // 流式增量归并（在 7378 基础上增强：message 实时进 answer；reasoning/tool 的流式文本
@@ -703,8 +894,22 @@ export struct ChatDetailPage {
     if (buf.length === 0) {
       return;
     }
+    // 并入「当前在途回合」而不是「列表最后一条」：中间若有服务端快照落地（或尾部多出一条
+    // 无用户消息的在途回合），按位置并入会把这一段响应挂到别的回合上去（真机实测会出现
+    // 上一轮的内容里混进这一轮的思考/工具行）。在途回合由 liveTurnId 指明。
     const arr: DisplayTurn[] = this.turns.slice();
-    const li: number = arr.length - 1;
+    let li: number = -1;
+    if (this.liveTurnId.length > 0) {
+      for (let i = arr.length - 1; i >= 0; i--) {
+        if (arr[i].id === this.liveTurnId) {
+          li = i;
+          break;
+        }
+      }
+    }
+    if (li < 0 && this.sending && arr.length > 0) {
+      li = arr.length - 1;
+    }
     if (li < 0) {
       return;
     }
@@ -713,6 +918,9 @@ export struct ChatDetailPage {
       t = this.mergeDeltaInto(t, d);
     }
     arr[li] = t;
+    // 这里**不能**用 animateTo 包住数据写入：同一帧里所有布局变化都会被补间 —— 不只是新插入的
+    // 卡片，还包括正在流式增长的那块文本（高度持续变大）⇒ 整块一直在"呼吸"（观感即"一直在闪"）。
+    // 卡片进场的淡入 / 上移改由行自身负责（ChatRow 的进场动画），与其它行的布局完全解耦。
     this.turns = arr;
     this.scrollBottom();
   }
@@ -731,9 +939,11 @@ export struct ChatDetailPage {
     }
     const hasTool: boolean = delta.toolName !== undefined || delta.toolInput !== undefined
       || delta.toolOutput !== undefined || delta.toolState !== undefined;
+    // 工具段顺带抽取产出文件（与历史快照同一套判定）：文件清单在运行中就出现，不等回合结束重取历史
+    const files: DisplayPart[] = toolMediaParts(delta.toolInput, delta.toolOutput);
     if (idx >= 0) {
       const cur: DisplayMessage = res[idx];
-      const parts: DisplayPart[] = cur.parts.slice();
+      const parts: DisplayPart[] = mergeMediaParts(cur.parts.slice(), files);
       appendText(parts, delta.text);
       const nm: DisplayMessage = {
         id: cur.id, role: cur.role, kind: cur.kind, parts: parts,
@@ -741,17 +951,18 @@ export struct ChatDetailPage {
         toolState: delta.toolState !== undefined ? delta.toolState : cur.toolState,
         toolCallId: cur.toolCallId, toolInput: delta.toolInput !== undefined ? delta.toolInput
           : (hasTool ? cur.toolInput : cur.toolInput),
-        toolOutput: delta.toolOutput !== undefined ? delta.toolOutput : cur.toolOutput
+        toolOutput: delta.toolOutput !== undefined ? delta.toolOutput : cur.toolOutput,
+        toolArgs: delta.toolInput !== undefined ? delta.toolInput : cur.toolArgs
       };
       res[idx] = nm;
     } else {
-      const parts: DisplayPart[] = [];
+      const parts: DisplayPart[] = files.slice();
       appendText(parts, delta.text);
       const id: string = delta.messageId.length > 0 ? delta.messageId : `seg_${t.id}_${res.length}`;
       const seg: DisplayMessage = {
-        id: id, role: 'assistant', kind: delta.kind, parts: parts,
+        id: id, role: 'assistant', kind: hasTool ? 'tool' : delta.kind, parts: parts,
         toolName: delta.toolName, toolState: delta.toolState,
-        toolInput: delta.toolInput, toolOutput: delta.toolOutput
+        toolInput: delta.toolInput, toolOutput: delta.toolOutput, toolArgs: delta.toolInput
       };
       res.push(seg);
     }
@@ -839,8 +1050,6 @@ export struct ChatDetailPage {
     this.draft = '';
     this.sending = true;
     this.stickBottom = true;
-    this.streamMsgId = '';
-    this.liveAnswerMsgId = '';
     const userPart: DisplayPart = { type: 'text', text: echo };
     const userMsg: DisplayMessage = { id: `user_${Date.now()}`, role: 'user', kind: 'message', parts: [userPart] };
     const liveTurn: DisplayTurn = {
@@ -852,6 +1061,7 @@ export struct ChatDetailPage {
     savePendingTurn(pendCtx, conn.baseUrl, conn.agentId, this.chatId, pend);
     const next: DisplayTurn[] = this.turns.slice();
     next.push(liveTurn);
+    this.liveTurnId = liveTurn.id;
     this.turns = next;
     this.scrollBottom(true);
     this.stream = streamChat(conn.baseUrl, conn.token, conn.agentId,
@@ -865,12 +1075,15 @@ export struct ChatDetailPage {
         if (error !== null) {
           this.errorMsg = error;
           // 发送失败：本地在途记录一并清掉（对齐 7378 send 的 catch → clearPendingChatTurn）
+          // 注意只清"在途标记"，列表里已挂上的那条回显不主动抹掉——消息多半已经发出去了，
+          // 由紧随其后的重取按服务端实际内容对齐（服务端没有它，回显自然就退了）
           const c: QpConnection | null = this.conn;
           if (c !== null) {
             clearPendingTurn(getContext(this) as common.UIAbilityContext, c.baseUrl, c.agentId,
               this.chatId);
           }
           this.pending = null;
+          this.liveTurnId = '';
         }
         // 流结束（成功或失败）都全量重取历史：补齐 reasoning/tool 块，并把 live turn 与
         // 服务端已落库的真实消息对齐（对齐 RN store.send 的 finally → loadChat）。
@@ -1023,219 +1236,258 @@ export struct ChatDetailPage {
   build() {
     HdsNavDestination() {
       Column() {
-        // 输入条 = ArkUI Tabs 的「悬浮页签栏」：barPosition=End + barOverlap +
-        // barFloatingStyle.systemMaterial 是官方「非标题栏、非 HdsTabs」的原生沉浸材质载体
-        // （《组件适配沉浸光感》底部页签一节 / 《沉浸光感典型场景》底部 Tabs 悬浮 + ExpandSafeArea）。
-        // 材质自带交互形变（interactive）与点光源（lightEffect），栏体由系统绘制为两端纯圆胶囊。
-        Tabs({ barPosition: BarPosition.End, index: 0 }) {
-          TabContent() {
-        // 悬浮层：Stack 底对齐——消息区（Column，铺满、底部留白）在下层，
-        // 悬浮输入胶囊（圆角+玻璃底+实时磨砂+投影）浮于其上（对齐「悬浮圆角胶囊 + 沉浸光感」）。
-        Stack({ alignContent: Alignment.Bottom }) {
-          Column() {
-          if (!this.listShown) {
-            // 数据未到位用骨架屏占位（官方 FAQ faqs-arkui-1489：组件"突然出现"会造成闪动，
-            // 建议用骨架屏）；历史到位后整块替换为真实列表。
-            ChatSkeleton({ isDark: this.isDark })
-              .width('100%')
-              .layoutWeight(1)
-          } else {
-          List({ scroller: this.scroller, initialIndex: this.initialRowIndex() }) {
-            // 首项占位 = 沉浸标题栏高度：留白必须落在**列表内容**里，不能加在包住 List 的容器上
-            // （容器 padding 会把视口裁到标题栏之下 → 消息滚不过去 → 磨砂/渐变模糊没有内容可模糊）
-            ListItem() {
-              Column().width('100%').height(UiTokens.topInset)
-            }
-            // 一行 = 一个 ListItem（用户气泡 / 消息段气泡 / 步骤组卡 / 工具产出媒体 / 待发占位）：
-            // List 的虚拟化对每行生效，只有"正在长的那一行"参与重排（此前整回合一个 ListItem，
-            // 流式期间每个 flush 都重排整个巨大 item，含数百行过程卡 → 滚动卡死）。
-            ForEach(this.doneRows(), (r: ConversationRow) => {
+        Row() {
+          // 输入条 = ArkUI Tabs 的「悬浮页签栏」：barPosition=End + barOverlap +
+          // barFloatingStyle.systemMaterial 是官方「非标题栏、非 HdsTabs」的原生沉浸材质载体
+          // （《组件适配沉浸光感》底部页签一节 / 《沉浸光感典型场景》底部 Tabs 悬浮 + ExpandSafeArea）。
+          // 材质自带交互形变（interactive）与点光源（lightEffect），栏体由系统绘制为两端纯圆胶囊。
+          Tabs({ barPosition: BarPosition.End, index: 0 }) {
+            TabContent() {
+          // 悬浮层：Stack 底对齐——消息区（Column，铺满、底部留白）在下层，
+          // 悬浮输入胶囊（圆角+玻璃底+实时磨砂+投影）浮于其上（对齐「悬浮圆角胶囊 + 沉浸光感」）。
+          Stack({ alignContent: Alignment.Bottom }) {
+            Column() {
+            if (!this.listShown) {
+              // 数据未到位用骨架屏占位（官方 FAQ faqs-arkui-1489：组件"突然出现"会造成闪动，
+              // 建议用骨架屏）；历史到位后整块替换为真实列表。
+              ChatSkeleton()
+                .width('100%')
+                .layoutWeight(1)
+            } else {
+            List({ scroller: this.scroller, initialIndex: this.initialRowIndex() }) {
+              // 首项占位 = 沉浸标题栏高度：留白必须落在**列表内容**里，不能加在包住 List 的容器上
+              // （容器 padding 会把视口裁到标题栏之下 → 消息滚不过去 → 磨砂/渐变模糊没有内容可模糊）
               ListItem() {
-                ChatRow({
-                  row: r,
-                  isDark: this.isDark,
-                  theme: this.theme,
-                  baseUrl: this.conn !== null ? this.conn.baseUrl : '',
-                  onToggleSteps: (k: string): void => {
-                    this.toggleSteps(k);
-                  }
-                })
+                Column().width('100%').height(UiTokens.topInset)
               }
-            }, (r: ConversationRow) => r.key)
-            // 末行不进 ForEach：官方口径《ForEach 循环渲染·键值生成规则》——「当键值变化时，
-            // 框架会基于新的键值创建一个新的组件」，键不变则不重跑 itemGenerator，子组件参数也不更新；
-            // 而"正在长的那一行"内容一直在变、键不变 ⇒ 流式期间界面会冻在载入那一帧。
-            // 直接挂在 ForEach 之外：父组件每次 flush 重跑 build → ChatRow 经 @Prop 拿到新行按常规
-            // 更新路径刷新，逐字可见、且不重建子树（展开态/选择态不被打断）。
-            if (this.liveRow() !== null) {
-              ListItem() {
-                ChatRow({
-                  row: this.liveRow() as ConversationRow,
-                  isDark: this.isDark,
-                  theme: this.theme,
-                  baseUrl: this.conn !== null ? this.conn.baseUrl : '',
-                  onToggleSteps: (k: string): void => {
-                    this.toggleSteps(k);
-                  }
-                })
-              }
-            }
-            // 末项占位 = 悬浮输入胶囊高度：滚到底时最后一条消息停在胶囊之上，其余消息从胶囊下滚过被实时模糊
-            ListItem() {
-              Column().width('100%').height(UiTokens.chatComposerInset)
-            }
-          }
-          .layoutWeight(1)
-          .width('100%')
-          .scrollBar(BarState.Auto)
-          .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
-          // 贴底跟随的判定 = 滚动位置是否真的到了内容末尾（Scroller.isAtEnd）。
-          // 不能用「末项可见」当判据：末项是悬浮输入胶囊的留白（120vp 高），刚往上划一点它仍可见
-          // → 被判成"还贴着底" → 下一次流式 flush 又 scrollEdge(Bottom) 把阅读位置拽回底部
-          //（划到底后往上划会被跳回底部）。松手判定一次：划走即停止跟随，划回底部自动恢复。
-          .onReachEnd((): void => {
-            this.stickBottom = true;
-          })
-          // 手指一按就停止跟随并冻结自动贴底（松手后由 onScrollStop 按是否到底决定是否恢复）
-          .onTouch((e: TouchEvent): void => {
-            if (e.type === TouchType.Down) {
-              this.userTouching = true;
-              this.stickBottom = false;
-            } else if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
-              this.userTouching = false;
-            }
-          })
-          .onScrollStop((): void => {
-            this.stickBottom = this.scroller.isAtEnd();
-          })
-          }
-
-        // 底部固定块（错误行 / 待发附件 / 待审批卡）：只在确有内容时占位——整组抬到悬浮输入胶囊之上，
-        // 避免被胶囊压住；无内容时不占位，消息列表保持整屏（底部实时模糊的前提）
-        if (this.errorMsg.length > 0 || this.attachments.length > 0 || this.uploading
-          || this.approvals.length > 0) {
-        Column() {
-        if (this.errorMsg.length > 0) {
-          Text(this.errorMsg)
-            .fontSize(UiTokens.fsCaption)
-            .fontColor($r('app.color.status_error'))
-            .width('100%')
-            .padding({ left: 4, right: 4, bottom: 6 })
-            .wordBreak(WordBreak.BREAK_ALL)
-        }
-
-        // 待发附件胶囊（点 ✕ 移除）；上传中显示转圈
-        if (this.attachments.length > 0 || this.uploading) {
-          Row() {
-            if (this.uploading) {
-              LoadingProgress()
-                .width(18)
-                .height(18)
-                .color(this.isDark ? this.theme.accentDark : this.theme.accent)
-                .margin({ right: 6 })
-            }
-            ForEach(this.attachments, (a: PendingAttachment) => {
-              Row() {
-                Text(a.name)
-                  .fontSize(UiTokens.fsCaption)
-                  .fontColor($r('app.color.text_secondary'))
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .constraintSize({ maxWidth: 180 })
-                Image($r('app.media.x'))
-                  .width(12).height(12)
-                  .fillColor($r('app.color.text_tertiary'))
-                  .margin({ left: 6 })
-                  .onClick((): void => {
-                    this.removeAttachment(a.id);
+              // 一行 = 一个 ListItem（用户气泡 / 消息段气泡 / 步骤组卡 / 工具产出媒体 / 待发占位）：
+              // List 的虚拟化对每行生效，只有"正在长的那一行"参与重排（此前整回合一个 ListItem，
+              // 流式期间每个 flush 都重排整个巨大 item，含数百行过程卡 → 滚动卡死）。
+              // 末行也在这里（见 allRows 注释）：内容变化由行对象的 @ObjectLink 原地更新。
+              ForEach(this.allRows(), (r: ConversationRow) => {
+                ListItem() {
+                  ChatRow({
+                    row: r,
+                    isDark: this.isDark,
+                    theme: this.theme,
+                    baseUrl: this.conn !== null ? this.conn.baseUrl : '',
+                    onToggleSteps: (k: string): void => {
+                      this.toggleSteps(k);
+                    }
                   })
+                }
+                // 卡片插入走过渡（过渡自带动画参数，不依赖外层 animateTo）：淡入 + 轻微上移
+                .transition(rowTransition())
+              }, (r: ConversationRow) => r.key)
+              // 末项占位 = 悬浮输入胶囊 + 其上的运行状态条：滚到底时最后一条消息（含文件清单卡）
+              // 停在两条之上，其余消息从两条下滚过被实时模糊
+              ListItem() {
+                Column().width('100%').height(UiTokens.chatListEndInset)
               }
-              .height(28)
-              .padding({ left: 10, right: 10 })
-              .margin({ right: 6, top: 4 })
-              .borderRadius(UiTokens.chipRadius)
-              .backgroundColor($r('app.color.card_bg'))
-            }, (a: PendingAttachment) => a.id)
-          }
-          .width('100%')
-          .alignItems(VerticalAlign.Center)
-        }
-
-        // 本会话待审批（对齐 RN：多条时显示计数，卡片显示第一条；composer 上方）
-        if (this.approvals.length > 0) {
-          Column() {
-            if (this.approvals.length > 1) {
-              Text(this.t($r('app.string.chat_approvals_count')).replace('%d',
-                this.approvals.length.toString()))
-                .fontSize(UiTokens.fsCaption)
-                .fontColor($r('app.color.text_tertiary'))
-                .margin({ bottom: 6 })
             }
-            ApprovalCard({
-              item: this.approvals[0],
-              onDeny: (): void => {
-                this.actApproval(this.approvals[0], 'exact', true);
-              },
-              onApprove: (scope: string): void => {
-                this.actApproval(this.approvals[0], scope, false);
+            .layoutWeight(1)
+            .width('100%')
+            // 从底部开始布局（官方 FAQ faqs-arkui-1519 场景二：聊天列表用 stackFromEnd(true) 从底部加载，
+            // 配合 scrollEdge(Edge.Bottom) 回最新位置；该属性从 API 19 起支持）。
+            // 为什么必须它：initialIndex 只决定"首个可见项"，内容不足一屏时列表仍从顶部排 —— 短会话
+            // 看上去就是"消息停在最上面"；stackFromEnd 让内容整体贴底，和 IM 一致。
+            .stackFromEnd(true)
+            .scrollBar(BarState.Auto)
+            .edgeEffect(EdgeEffect.Spring, { alwaysEnabled: true })
+            // 贴底跟随的判定 = 滚动位置是否真的到了内容末尾（Scroller.isAtEnd）。
+            // 不能用「末项可见」当判据：末项是悬浮输入胶囊的留白（120vp 高），刚往上划一点它仍可见
+            // → 被判成"还贴着底" → 下一次流式 flush 又 scrollEdge(Bottom) 把阅读位置拽回底部
+            //（划到底后往上划会被跳回底部）。松手判定一次：划走即停止跟随，划回底部自动恢复。
+            .onReachEnd((): void => {
+              this.stickBottom = true;
+              this.syncBottomFab();
+            })
+            // 手指一按就停止跟随并冻结自动贴底（松手后由 onScrollStop 按是否到底决定是否恢复）
+            .onTouch((e: TouchEvent): void => {
+              if (e.type === TouchType.Down) {
+                this.userTouching = true;
+                this.stickBottom = false;
+              } else if (e.type === TouchType.Up || e.type === TouchType.Cancel) {
+                this.userTouching = false;
               }
             })
+            // 滚动过程中持续同步（按钮的出现/消失跟手，而不是等松手才出现）
+            .onScroll((): void => {
+              this.syncBottomFab();
+            })
+            .onScrollStop((): void => {
+              this.stickBottom = this.scroller.isAtEnd();
+              this.syncBottomFab();
+            })
+            }
+
+          // 底部固定块（错误行 / 待发附件 / 待审批卡）：只在确有内容时占位——整组抬到悬浮输入胶囊之上，
+          // 避免被胶囊压住；无内容时不占位，消息列表保持整屏（底部实时模糊的前提）
+          if (this.errorMsg.length > 0 || this.attachments.length > 0 || this.uploading
+            || this.approvals.length > 0) {
+          Column() {
+          if (this.errorMsg.length > 0) {
+            Text(this.errorMsg)
+              .fontSize(UiTokens.fsCaption)
+              .fontColor($r('app.color.status_error'))
+              .width('100%')
+              .padding({ left: 4, right: 4, bottom: 6 })
+              .wordBreak(WordBreak.BREAK_ALL)
+          }
+
+          // 待发附件胶囊（点 ✕ 移除）；上传中显示转圈
+          if (this.attachments.length > 0 || this.uploading) {
+            Row() {
+              if (this.uploading) {
+                LoadingProgress()
+                  .width(18)
+                  .height(18)
+                  .color(this.isDark ? this.theme.accentDark : this.theme.accent)
+                  .margin({ right: 6 })
+              }
+              ForEach(this.attachments, (a: PendingAttachment) => {
+                Row() {
+                  Text(a.name)
+                    .fontSize(UiTokens.fsCaption)
+                    .fontColor($r('app.color.text_secondary'))
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .constraintSize({ maxWidth: 180 })
+                  Image($r('app.media.x'))
+                    .width(12).height(12)
+                    .fillColor($r('app.color.text_tertiary'))
+                    .margin({ left: 6 })
+                    .onClick((): void => {
+                      this.removeAttachment(a.id);
+                    })
+                }
+                .height(28)
+                .padding({ left: 10, right: 10 })
+                .margin({ right: 6, top: 4 })
+                .borderRadius(UiTokens.chipRadius)
+                .backgroundColor($r('app.color.card_bg'))
+              }, (a: PendingAttachment) => a.id)
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Center)
+          }
+
+          // 本会话待审批（对齐 RN：多条时显示计数，卡片显示第一条；composer 上方）
+          if (this.approvals.length > 0) {
+            Column() {
+              if (this.approvals.length > 1) {
+                Text(this.t($r('app.string.chat_approvals_count')).replace('%d',
+                  this.approvals.length.toString()))
+                  .fontSize(UiTokens.fsCaption)
+                  .fontColor($r('app.color.text_tertiary'))
+                  .margin({ bottom: 6 })
+              }
+              ApprovalCard({
+                item: this.approvals[0],
+                onDeny: (): void => {
+                  this.actApproval(this.approvals[0], 'exact', true);
+                },
+                onApprove: (scope: string): void => {
+                  this.actApproval(this.approvals[0], scope, false);
+                }
+              })
+            }
+            .width('100%')
+            .alignItems(HorizontalAlign.Start)
+          }
           }
           .width('100%')
-          .alignItems(HorizontalAlign.Start)
-        }
-        }
-        .width('100%')
-        .margin({ bottom: UiTokens.chatComposerInset })
-        }
+          .margin({ bottom: UiTokens.chatComposerInset })
           }
-          .width('100%')
-          .height('100%')
-      }
-      .width('100%')
-      .height('100%')
-      // 左右留白挂在滚动区容器（外层 Stack）上，不是最外层 Column：外层铺满屏幕左右，
-      // 输入条父容器（Tabs）才能扩到屏幕边缘，不在两侧露出窗口底色
-      .padding({ left: UiTokens.pageHMargin, right: UiTokens.pageHMargin })
-          }
-          .tabBar(this.composerBar())
+            }
+            .width('100%')
+            .height('100%')
+        // 「一键回到底部」：浮在消息区底部、让开输入胶囊与运行状态条（对齐 console 用的 SDK
+        // BubbleList 里那颗 ScrollToBottom：圆形下箭头、贴底居中、距底超过阈值才出现）。
+        // 隐藏态是"下移自身高度 + 透明 + 不接收点击"，进出场 200ms —— 与 console 的 0.2s 过渡一致。
+        // 外观载体用 Toggle(ToggleType.Button) 而不是 Button：本按钮在内容区，官方口径下
+        // Button 挂组件级 systemMaterial 会被打印 `Material inactive: out of scope` 而完全不生效
+        // （真机实证），而 Toggle 在「全页面生效」名单内、官方明确 `ToggleType.Button` 效果与
+        // Button 组件设置沉浸光感相同（聊天页底部状态条三枚芯片同一路径）。
+        // isOn 固定 false：只借材质与交互形变，不留选中态（每次点按都当作"回到底部"）。
+        Toggle({ type: ToggleType.Button, isOn: false }) {
+          SymbolGlyph($r('sys.symbol.arrow_down'))
+            .fontSize(20)
+            .fontColor([$r('app.color.text_primary_strong')])
         }
-        .barOverlap(true)
-        .scrollable(false)
-        // 胶囊只承载输入行（状态条已移出，浮在胶囊之上）
-        .barHeight(UiTokens.chatComposerHeight + 1)
-        // 会话运行状态条：浮层定位在胶囊之上 3vp（官方 overlay：不重新渲染 TabBar 即可叠加组件）
-        .overlay(this.runtimeRow(), {
-          align: Alignment.Bottom,
-          offset: {
-            x: 0,
-            y: -(UiTokens.chatComposerBottomMargin + UiTokens.chatComposerHeight + 1
-              + UiTokens.chatRuntimeRowGap)
-          }
+        .width(BOTTOM_FAB_SIZE)
+        .height(BOTTOM_FAB_SIZE)
+        .borderRadius(BOTTOM_FAB_SIZE / 2)
+        // 透明底：玻璃观感由沉浸材质给（官方示例即「透明底 + ImmersiveMaterial」）
+        .backgroundColor(Color.Transparent)
+        // 沉浸材质 THIN：档位随设备算力自适应、跟随系统「沉浸光感」开关；interactive = 交互形变、
+        // lightEffect 取服务端同步的主题色（ThemeManager 的快照，console 主题改色这边跟着变）
+        .systemMaterial(new uiMaterial.ImmersiveMaterial({
+          style: uiMaterial.ImmersiveStyle.THIN,
+          interactive: true,
+          lightEffect: { color: this.theme.accent }
+        }))
+        .selectedColor(Color.Transparent)
+        .shadow({ radius: 12, color: '#40000000', offsetX: 0, offsetY: 2 })
+        .margin({ bottom: this.bottomFabOffset() })
+        .opacity(this.atBottom ? 0 : 1)
+        .translate({ y: this.atBottom ? BOTTOM_FAB_SIZE : 0 })
+        .hitTestBehavior(this.atBottom ? HitTestMode.None : HitTestMode.Default)
+        .animation({ duration: BOTTOM_FAB_ANIM_MS, curve: Curve.EaseOut })
+        // Toggle 每次点按都翻转内部开关态 → 不区分方向都触发动作（本按钮没有"取消"语义）
+        .onChange((isOn: boolean): void => {
+          this.jumpToBottom();
         })
-        .barFloatingStyle({
-          // 悬浮栏默认按内容自适应宽度（实测输入框被压到 112px）→ 显式给宽度：
-          // 344vp + 两侧 16vp = 376vp = 屏幕全宽（1316px @3.5）
-          barWidth: { smallBarWidth: 344, mediumBarWidth: 344, largeBarWidth: 344 },
-          barSideMargin: UiTokens.pageHMargin,
-          // 栏体背板遮罩默认近黑：按压/拖动时栏体形变，遮罩露出即"黑边遮挡"（真机拖拽实测
-          // 遮罩节点 BackgroundMask x56-1260 y2531-2832，漏出的行取值为 2~5）→ 置透明
-          maskColor: Color.Transparent,
-          barBottomMargin: 12,
-          systemMaterial: new uiMaterial.ImmersiveMaterial({
-            style: uiMaterial.ImmersiveStyle.THIN,
-            interactive: true,
-            lightEffect: { color: this.theme.accent }
-          })
-        })
+        }
         .width('100%')
         .height('100%')
+        // 左右留白挂在滚动区容器（外层 Stack）上，不是最外层 Column：外层铺满屏幕左右，
+        // 输入条父容器（Tabs）才能扩到屏幕边缘，不在两侧露出窗口底色
+        .padding({ left: UiTokens.pageHMargin, right: UiTokens.pageHMargin })
+            }
+            .tabBar(this.composerBar())
+          }
+          .barOverlap(true)
+          .scrollable(false)
+          // 胶囊只承载输入行（状态条已移出，浮在胶囊之上）
+          .barHeight(UiTokens.chatComposerHeight + 1)
+          // 会话运行状态条：浮层定位在胶囊之上 3vp（官方 overlay：不重新渲染 TabBar 即可叠加组件）
+          .overlay(this.runtimeRow(), {
+            align: Alignment.Bottom,
+            offset: {
+              x: 0,
+              y: -(UiTokens.chatComposerBottomMargin + UiTokens.chatComposerHeight + 1
+                + UiTokens.chatRuntimeRowGap)
+            }
+          })
+          .barFloatingStyle({
+            // 悬浮栏默认按内容自适应宽度（实测输入框被压到 112px）→ 显式给宽度：
+            // 344vp + 两侧 16vp = 376vp = 屏幕全宽（1316px @3.5）
+            barWidth: { smallBarWidth: 344, mediumBarWidth: 344, largeBarWidth: 344 },
+            barSideMargin: UiTokens.pageHMargin,
+            // 栏体背板遮罩默认近黑：按压/拖动时栏体形变，遮罩露出即"黑边遮挡"（真机拖拽实测
+            // 遮罩节点 BackgroundMask x56-1260 y2531-2832，漏出的行取值为 2~5）→ 置透明
+            maskColor: Color.Transparent,
+            barBottomMargin: 12,
+            systemMaterial: new uiMaterial.ImmersiveMaterial({
+              style: uiMaterial.ImmersiveStyle.THIN,
+              interactive: true,
+              lightEffect: { color: this.theme.accent }
+            })
+          })
+          .width('100%')
+          .height('100%')
+        }
+        .width(wideClampW(this.pageW))
+        .layoutWeight(1)
+        .justifyContent(FlexAlign.Center)
     }
       .width('100%')
       .height('100%')
       // 键盘弹起时把底部让出来，悬浮输入条随之抬到键盘之上（与 NONE 模式配套）
       .padding({ bottom: this.keyboardInset })
       .backgroundColor($r('app.color.page_bg'))
+      .onAreaChange(this.onChatArea)
       // 沉浸到状态栏 / 导航栏 / 屏幕左右两侧：绘制区扩到安全区之外（官方 expandSafeArea），
       // 否则上带显示系统壁纸、下带露出导航条底色、左右露出窗口底色的黑带
       .expandSafeArea([SafeAreaType.SYSTEM],
@@ -1243,6 +1495,25 @@ export struct ChatDetailPage {
     }
     // 内容也扩到安全区外（布局级）：官方 NavDestination.ignoreLayoutSafeArea，
     // 与 expandSafeArea 同时设置时它优先；前置条件要求标题栏隐藏或 STACK 模式
+    .onShown((): void => {
+      this.applySessionApproval();
+    })
+    // 二级页转场：整页自右水平覆盖进来（退出滑回右侧）——见 services/NavPush.slideCoverTransition。
+    // 系统默认档在分栏下动的是"内容区左边缘 0 → 分栏位"，观感从左侧摊过来（判"方向反了"），
+    // 故改用官方 customTransition（NavDestinationTransitionDelegate）自己定方向。
+    .customTransition((op: NavigationOperation, isEnter: boolean)
+      : Array<NavDestinationTransition> | undefined => slideCoverTransition(op, isEnter,
+        (v: string): void => { this.pageX = v; }))
+    .translate({ x: this.pageX })
+    // 返回键：本页显式出栈并消费。单栏/分栏下系统返回都不会自动弹本页
+    // （平板横屏实测按返回直接退到桌面），出栈后右栏回到空态占位（QwenPaw 形象）。
+    .onBackPressed((): boolean => {
+      const stack: NavPathStack | null = this.stack;
+      if (stack !== null && stack.size() > 0) {
+        stack.pop();
+      }
+      return true;
+    })
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM],
       [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM, LayoutSafeAreaEdge.START, LayoutSafeAreaEdge.END])
     .titleBar({
@@ -1309,28 +1580,20 @@ export struct ChatDetailPage {
 
 // ============ 会话详情页用的显示纯逻辑 ============
 // 行渲染（气泡 / 步骤组卡 / 媒体 / 分发器）已拆到 components/ChatRows.ets；
-// 这里只留页面自身用到的两个分片辅助函数。
+// 这里只留页面自身用到的分片辅助函数。
 
-// 列表里最后一条用户消息的文本（在途回合对账用）
-function lastUserTextOf(list: DisplayTurn[]): string {
-  for (let i = list.length - 1; i >= 0; i--) {
-    const u: DisplayMessage | null = list[i].user;
-    if (u !== null) {
-      let out: string = '';
-      for (const p of u.parts) {
-        if (p.type === 'text' && p.text !== undefined) {
-          out += p.text;
-        }
-      }
-      return out;
-    }
-  }
-  return '';
-}
-
-// 追加文本到分片数组：合并进末尾 text 分片，否则新起一片（流式 delta 归并用）
+// 追加文本到分片数组：合并进末尾 text 分片，否则新起一片（流式 delta 归并用）。
+// 空文本直接返回 —— 工具段本就没有文本载荷，不该因此多挂一个空 text 分片；
+// 尚无文本分片时纯空白（服务端会发 "\n\n" 这类分片）也跳过，否则会先落一张空卡再等正文。
 function appendText(parts: DisplayPart[], text: string): void {
+  if (text.length === 0) {
+    return;
+  }
   const lastIdx: number = parts.length - 1;
+  const hasText: boolean = lastIdx >= 0 && parts[lastIdx].type === 'text';
+  if (!hasText && text.trim().length === 0) {
+    return;
+  }
   if (lastIdx >= 0 && parts[lastIdx].type === 'text') {
     const lp: DisplayPart = parts[lastIdx];
     parts[lastIdx] = { type: 'text', text: (lp.text !== undefined ? lp.text : '') + text };
@@ -1338,4 +1601,25 @@ function appendText(parts: DisplayPart[], text: string): void {
     const np: DisplayPart = { type: 'text', text: text };
     parts.push(np);
   }
+}
+
+// 卡片插入/移除的过渡：淡入淡出 + 轻微上移。显式给两段各自的 animation 参数 —— 过渡不依赖
+// 外层 animateTo（把数据写入包进 animateTo 会把同一帧里"正在变高的流式文本"一起补间，整块会一直
+// 呼吸/闪；官方 faqs-arkui-622 也把"过渡写错/依赖外部动画上下文"列为闪动来源）。
+function rowTransition(): TransitionEffect {
+  const anim: AnimateParam = { duration: EXPAND_ANIM_MS, curve: Curve.EaseOut };
+  return TransitionEffect.OPACITY.animation(anim)
+    .combine(TransitionEffect.translate({ y: 12 }).animation(anim));
+}
+
+// 该分段是否有可显示内容：按**可见性**判定（非空白文本 / 媒体分片 / 错误）——服务端会下发 text
+// 只有 "\n\n" 的 message 记录（实测同一会话 26 条），按"分片非空"判定会放过它，结果渲染成一张
+// 只有卡片底色的空白卡（真机表现为"每个气泡中间夹着一张空白卡"）。
+function messagesHaveContent(msgs: DisplayMessage[]): boolean {
+  for (const m of msgs) {
+    if (rowHasVisibleContent(m)) {
+      return true;
+    }
+  }
+  return false;
 }

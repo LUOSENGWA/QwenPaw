@@ -11,7 +11,6 @@
  * 不用 mediaquery —— 同一个盒子既用于内容居中、也用于标题偏移，两边必然对齐。
  */
 
-export const BP_MD: number = 600;
 export const BP_LG: number = 840;
 
 // 大屏内容列最大宽度（vp）：超出即居中，避免卡片/表单被拉到上千 vp 宽
@@ -25,4 +24,15 @@ export function clampWidthOf(winW: number): number {
 // 标题栏 / 工具条右移量（vp）：与内容列的居中量一致，两边左边界重合
 export function wideOffsetOf(winW: number): number {
   return winW > CONTENT_MAX ? (winW - CONTENT_MAX) / 2 : 0;
+}
+
+// 页面尺寸上报：窗口变化时返回应写入的宽度（未变化则原值返回——赋值同值不触发刷新）
+export function areaWidthOf(now: Area, cur: number): number {
+  const w: number = typeof now.width === 'number' ? now.width as number : 0;
+  return (w > 0 && Math.abs(w - cur) > 0.5) ? w : cur;
+}
+
+// 大屏内容列宽度（官方缩进布局）：未到 lg 档退回 '100%'
+export function wideClampW(pageW: number): Length {
+  return pageW >= BP_LG ? CONTENT_MAX : '100%';
 }

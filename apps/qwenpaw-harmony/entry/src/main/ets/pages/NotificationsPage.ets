@@ -6,7 +6,8 @@
  */
 
 import { HdsNavDestination, ScrollEffectType, BlurStrategy, hdsMaterial } from '@kit.UIDesignKit';
-import { uiMaterial, LengthMetrics } from '@kit.ArkUI';
+import { areaWidthOf, wideClampW } from '../theme/Breakpoints';
+import { uiMaterial } from '@kit.ArkUI';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { QpConnection, loadConnection } from '../services/ConnectionStore';
 import {
@@ -18,6 +19,7 @@ import { requestNotificationPermission } from '../services/NotifyService';
 import { SheetGate, moduleSheetOptions } from '../components/SheetGate';
 import { ThemeManager, ThemeSnapshot, ThemeListener } from '../theme/ThemeManager';
 import { UiTokens } from '../theme/UiTokens';
+import { popSelfOnBack, slideCoverTransition } from '../services/NavPush';
 
 @Builder
 export function NotificationsPageBuilder(_name: string, param: Object) {
@@ -42,6 +44,18 @@ export struct NotificationsPage {
   private gate: SheetGate = new SheetGate();
   private themeListener: ThemeListener | null = null;
 
+  // 大屏（平板/电脑）内容列限宽：官方《页面布局场景》缩进布局 —— 空间充足时内容列居中、两侧留白；
+  // 宽度由外层满宽容器 onAreaChange 实时上报（跟随窗口缩放），实现见 theme/Breakpoints
+  @State pageW: number = 0;
+
+  private onPageArea = (_old: Area, now: Area): void => {
+    this.pageW = areaWidthOf(now, this.pageW);
+  };
+
+  // 导航栈（onReady 时由框架注入）：标题栏返回按钮与系统侧滑都走它出栈
+  private stack: NavPathStack | null = null;
+  // 二级页水平覆盖转场的位移（百分比）：由 NavPush.slideCoverTransition 驱动
+  @State pageX: string = '0%';
   aboutToAppear(): void {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     this.isDark = ctx.config.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
@@ -163,110 +177,131 @@ export struct NotificationsPage {
 
   build() {
     HdsNavDestination() {
-      Scroll() {
-        Column() {
-          Text($r('app.string.notify_hero_title'))
-            .fontSize(20)
-            .fontWeight(FontWeight.Bold)
-            .fontColor($r('app.color.text_primary_strong'))
-            .width('100%')
-            .margin({ top: 12 })
-          Text($r('app.string.notify_hero_sub'))
-            .fontSize(UiTokens.fsSecondary)
-            .fontColor($r('app.color.text_tertiary'))
-            .width('100%')
-            .margin({ top: 6, bottom: 16 })
-
-          if (this.error.length > 0) {
-            Text(this.error)
-              .fontSize(UiTokens.fsBody)
-              .fontColor($r('app.color.status_error'))
+      Row() {
+        Scroll() {
+          Column() {
+            Text($r('app.string.notify_hero_title'))
+              .fontSize(20)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.text_primary_strong'))
               .width('100%')
-          } else if (!this.loading) {
-            this.switchRow($r('app.string.notify_master'), this.notifyOn, false, (v: boolean): void => {
-              this.notifyOn = v;
-              this.save();
-              if (v) {
-                // 打开主开关 → 顺手请求系统通知授权（首次弹窗）
-                this.enableSystemNotifications();
-              }
-            })
-            this.switchRow($r('app.string.notify_run_completed'), this.runCompleted, !this.notifyOn,
-              (v: boolean): void => {
-                this.runCompleted = v;
-                this.save();
-              })
-            this.switchRow($r('app.string.notify_input_required'), this.inputRequired, !this.notifyOn,
-              (v: boolean): void => {
-                this.inputRequired = v;
-                this.save();
-              })
-            this.switchRow($r('app.string.notify_approval_required'), this.approvalRequired, !this.notifyOn,
-              (v: boolean): void => {
-                this.approvalRequired = v;
-                this.save();
-              })
-            this.switchRow($r('app.string.notify_run_failed'), this.runFailed, !this.notifyOn,
-              (v: boolean): void => {
-                this.runFailed = v;
-                this.save();
-              })
+              .margin({ top: 12 })
+            Text($r('app.string.notify_hero_sub'))
+              .fontSize(UiTokens.fsSecondary)
+              .fontColor($r('app.color.text_tertiary'))
+              .width('100%')
+              .margin({ top: 6, bottom: 16 })
 
-            Row() {
-              Text($r('app.string.notify_preview'))
+            if (this.error.length > 0) {
+              Text(this.error)
                 .fontSize(UiTokens.fsBody)
-                .fontColor(this.notifyOn
-                  ? $r('app.color.text_primary_strong') : $r('app.color.text_tertiary'))
-                .layoutWeight(1)
-              Text(this.previewLabel())
-                .fontSize(UiTokens.fsSecondary)
-                .fontColor($r('app.color.text_tertiary'))
-              Image($r('app.media.chevron_right'))
-                .width(16).height(16)
-                .fillColor($r('app.color.text_tertiary'))
-                .margin({ left: 6 })
-            }
-            .width('100%')
-            .padding(UiTokens.cardPad)
-            .borderRadius(UiTokens.cardRadius)
-            .backgroundColor($r('app.color.card_glass'))
-            .onClick((): void => {
-              if (!this.notifyOn) {
-                return;
-              }
-              if (this.gate.request()) {
-                this.sheetShown = true;
-              }
-            })
+                .fontColor($r('app.color.status_error'))
+                .width('100%')
+            } else if (!this.loading) {
+              this.switchRow($r('app.string.notify_master'), this.notifyOn, false, (v: boolean): void => {
+                this.notifyOn = v;
+                this.save();
+                if (v) {
+                  // 打开主开关 → 顺手请求系统通知授权（首次弹窗）
+                  this.enableSystemNotifications();
+                }
+              })
+              this.switchRow($r('app.string.notify_run_completed'), this.runCompleted, !this.notifyOn,
+                (v: boolean): void => {
+                  this.runCompleted = v;
+                  this.save();
+                })
+              this.switchRow($r('app.string.notify_input_required'), this.inputRequired, !this.notifyOn,
+                (v: boolean): void => {
+                  this.inputRequired = v;
+                  this.save();
+                })
+              this.switchRow($r('app.string.notify_approval_required'), this.approvalRequired, !this.notifyOn,
+                (v: boolean): void => {
+                  this.approvalRequired = v;
+                  this.save();
+                })
+              this.switchRow($r('app.string.notify_run_failed'), this.runFailed, !this.notifyOn,
+                (v: boolean): void => {
+                  this.runFailed = v;
+                  this.save();
+                })
 
-            Text($r('app.string.notify_scope'))
-              .fontSize(UiTokens.fsCaption)
-              .fontColor($r('app.color.text_tertiary'))
+              Row() {
+                Text($r('app.string.notify_preview'))
+                  .fontSize(UiTokens.fsBody)
+                  .fontColor(this.notifyOn
+                    ? $r('app.color.text_primary_strong') : $r('app.color.text_tertiary'))
+                  .layoutWeight(1)
+                Text(this.previewLabel())
+                  .fontSize(UiTokens.fsSecondary)
+                  .fontColor($r('app.color.text_tertiary'))
+                Image($r('app.media.chevron_right'))
+                  .width(16).height(16)
+                  .fillColor($r('app.color.text_tertiary'))
+                  .margin({ left: 6 })
+              }
               .width('100%')
-              .margin({ top: 14 })
-            Text($r('app.string.notify_privacy'))
-              .fontSize(UiTokens.fsCaption)
-              .fontColor($r('app.color.text_tertiary'))
-              .width('100%')
-              .margin({ top: 6, bottom: 24 })
+              .padding(UiTokens.cardPad)
+              .borderRadius(UiTokens.cardRadius)
+              .backgroundColor($r('app.color.card_glass'))
+              .onClick((): void => {
+                if (!this.notifyOn) {
+                  return;
+                }
+                if (this.gate.request()) {
+                  this.sheetShown = true;
+                }
+              })
+
+              Text($r('app.string.notify_scope'))
+                .fontSize(UiTokens.fsCaption)
+                .fontColor($r('app.color.text_tertiary'))
+                .width('100%')
+                .margin({ top: 14 })
+              Text($r('app.string.notify_privacy'))
+                .fontSize(UiTokens.fsCaption)
+                .fontColor($r('app.color.text_tertiary'))
+                .width('100%')
+                .margin({ top: 6, bottom: 24 })
+            }
           }
+          .width('100%')
+          .padding({ top: UiTokens.topInset, left: UiTokens.pageHMargin, right: UiTokens.pageHMargin })
+          .alignItems(HorizontalAlign.Start)
         }
-        .width('100%')
-        .padding({ top: UiTokens.topInset, left: UiTokens.pageHMargin, right: UiTokens.pageHMargin })
-        .alignItems(HorizontalAlign.Start)
+        .width(wideClampW(this.pageW))
+        .height('100%')
+        .scrollBar(BarState.Off)
+        .bindSheet(this.sheetShown, this.sheet(), moduleSheetOptions(360, this.gate,
+          (v: boolean): void => {
+            this.sheetShown = v;
+          }))
       }
       .width('100%')
       .height('100%')
-      .scrollBar(BarState.Off)
-      .bindSheet(this.sheetShown, this.sheet(), moduleSheetOptions(360, this.gate,
-        (v: boolean): void => {
-          this.sheetShown = v;
-        }))
+      .justifyContent(FlexAlign.Center)
+      .onAreaChange(this.onPageArea)
     }
     // 内容也扩到安全区外（布局级，与 expandSafeArea 同设时优先）：二级页四边都扩，
     // 否则下端/左右两侧会露出窗口底色（页面底部输入条一带表现为黑带）
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM],
       [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM, LayoutSafeAreaEdge.START, LayoutSafeAreaEdge.END])
+    // 二级页转场：整页自右水平覆盖进来（退出滑回右侧）——见 services/NavPush.slideCoverTransition。
+    // 系统默认档在分栏下动的是"内容区左边缘 0 → 分栏位"，观感从左侧摊过来（判"方向反了"），
+    // 故改用官方 customTransition（NavDestinationTransitionDelegate）自己定方向。
+    .customTransition((op: NavigationOperation, isEnter: boolean)
+      : Array<NavDestinationTransition> | undefined => slideCoverTransition(op, isEnter,
+        (v: string): void => { this.pageX = v; }))
+    .translate({ x: this.pageX })
+    // 本页未从入栈参数带 NavPathStack：按官方口径在 onReady 取导航栈（NavDestinationContext.pathStack）
+    .onReady((ctx: NavDestinationContext): void => {
+      this.stack = ctx.pathStack;
+    })
+    // 返回键：系统侧滑与标题栏左上角返回按钮都投递到当前 NavDestination 的 onBackPressed
+    //（官方 FAQ faqs-arkui-1117：该回调"支持拦截系统侧滑及 NavDestination 标题栏的返回事件"）；
+    // 没挂它时标题栏返回按钮点了没有反应 —— 这里自己出栈并消费。
+    .onBackPressed((): boolean => popSelfOnBack(this.stack))
     .titleBar({
       style: {
         scrollEffectOpts: {

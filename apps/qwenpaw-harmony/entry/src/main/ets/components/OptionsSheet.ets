@@ -50,6 +50,10 @@ export struct OptionsSheet {
   onConfirm: (value: string) => void = (): void => {};
   onClose: () => void = (): void => {};
   @State picked: string = '';
+  // 是否已经点过某个选项：不能用 picked.length > 0 代替 ——「跟随 Agent / 继承默认」这类选项的
+  // value 就是空串，用长度判据会让「确定」永远禁用，用户再也回不到默认档（实测：审批面板选中
+  // 「跟随 Agent」后确定键点不动）
+  @State pickedSet: boolean = false;
   @State navInset: number = 0;
   @State pressed: number = -1;
   private latch: PressLatch = new PressLatch();
@@ -59,6 +63,7 @@ export struct OptionsSheet {
     const ctx: common.UIAbilityContext = this.getUIContext().getHostContext() as common.UIAbilityContext;
     this.dark = isDarkMode(ctx);
     this.picked = this.current;
+    this.pickedSet = false;
     // 底部系统导航区高度：面板底部的「确定」不能被导航条/手势条压住。
     // 官方 window.getWindowAvoidArea：优先取导航指示条（手势条）避让区，退化到系统避让区；
     // 两者都为 0（沉浸窗口可能报 0）时用保底值，确保按钮不在手势条上。
@@ -77,14 +82,6 @@ export struct OptionsSheet {
     return this.confirmPick ? this.picked === value : this.current === value;
   }
 
-  private t(res: Resource): string {
-    try {
-      const host: common.Context = this.getUIContext().getHostContext() as common.Context;
-      return host.resourceManager.getStringSync(res.id);
-    } catch (e) {
-      return '';
-    }
-  }
 
   @Builder
   optionRow(o: SheetOption, idx: number) {
@@ -118,6 +115,8 @@ export struct OptionsSheet {
     .onClick((): void => {
       if (this.confirmPick) {
         this.picked = o.value;
+        // 点过即视为"已选择"，确定键据此启用（空值选项也算）
+        this.pickedSet = true;
         return;
       }
       this.onPick(o.value);
@@ -271,14 +270,14 @@ export struct OptionsSheet {
           Text($r('app.string.common_confirm'))
             .fontSize(UiTokens.fsBody)
             .fontWeight(FontWeight.Medium)
-            .fontColor(this.picked.length > 0
+            .fontColor(this.pickedSet
               ? $r('app.color.text_primary_strong') : $r('app.color.text_tertiary'))
         }
         .width('100%')
         .height(46)
         .backgroundColor(Color.Transparent)
         .systemMaterial(this.confirmMaterial())
-        .enabled(this.picked.length > 0)
+        .enabled(this.pickedSet)
         .onChange((isOn: boolean): void => {
           if (isOn) {
             this.onConfirm(this.picked);

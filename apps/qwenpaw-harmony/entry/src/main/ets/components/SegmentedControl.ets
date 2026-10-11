@@ -122,8 +122,9 @@ export struct SegmentedControl {
     Text(this.labels.length > index ? this.labels[index] : $r('app.string.tab_chats'))
       .fontSize(14)
       .fontWeight(this.selectedIndex === index ? FontWeight.Medium : FontWeight.Normal)
-      .fontColor(this.selectedIndex === index
-        ? $r('app.color.text_primary_strong') : $r('app.color.text_tertiary'))
+      // 未选中也用正文主色（深色=白、浅色=深），只靠字重与滑块区分选中态：
+      // 未选中用 text_tertiary 在深色下是灰字，与浅色玻璃滑块混在一起读不出来。
+      .fontColor($r('app.color.text_primary_strong'))
       .textAlign(TextAlign.Center)
       .width('50%')
       .height(this.segHeight)

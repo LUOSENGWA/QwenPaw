@@ -107,24 +107,6 @@ function parseBlock(block: string): SseEvent[] {
   return [{ event: event, data: data.join('\n') }];
 }
 
-export function eventText(event: SseEvent): string {
-  if (event.data === '[DONE]') {
-    return '';
-  }
-  const payload: Record<string, Object> | null = jsonPayload(event.data);
-  if (payload === null) {
-    return event.data;
-  }
-  if (payload['object'] === 'content' && payload['delta'] === true) {
-    const t: Object = payload['text'];
-    return typeof t === 'string' ? t as string : '';
-  }
-  if (payload['object'] === 'message' && payload['status'] === 'in_progress') {
-    return messageDeltaText(payload['content']);
-  }
-  return '';
-}
-
 export function streamError(event: SseEvent): string | null {
   const payload: Record<string, Object> | null = jsonPayload(event.data);
   if (payload === null) {
@@ -190,11 +172,14 @@ export class StreamEventClassifier {
     const messageId: string = typeof msgId === 'string' ? msgId as string : 'stream';
     const text: Object = payload['text'];
     if (typeof text !== 'string' || (text as string).length === 0) {
-      const k0: string = this.messageTypes.get(messageId) ?? 'message';
-      if (k0 === 'tool' && payload['type'] === 'data') {
-        const only: Record<string, Object> | null = toolDataOf([payload]);
-        if (only !== null) {
-          return toolDeltaOf(messageId, only, k0);
+      // 无文本载荷的 data 分片 = 工具事件（name / arguments / output / state 之一）。
+      // 这里不能按"该 msg_id 的类型还没记录到"就丢弃（工具数据先于类型事件到达时会整段丢掉），
+      // 更不能落成 message 段——空文本的 message 段会渲染成一张空白气泡卡片。
+      if (payload['type'] === 'data') {
+        const data: Record<string, Object> | null = toolDataOf([payload]);
+        if (data !== null) {
+          const k0: string = this.messageTypes.get(messageId) ?? 'tool';
+          return toolDeltaOf(messageId, data, k0 === 'message' ? 'tool' : k0);
         }
       }
       return null;

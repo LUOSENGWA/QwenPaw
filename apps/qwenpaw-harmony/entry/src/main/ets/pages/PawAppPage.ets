@@ -12,7 +12,8 @@ import { url } from '@kit.ArkTS';
 import { QpConnection, loadConnection } from '../services/ConnectionStore';
 import { ThemeManager, ThemeSnapshot, ThemeListener } from '../theme/ThemeManager';
 import { UiTokens } from '../theme/UiTokens';
-import { LengthMetrics } from '@kit.ArkUI';
+
+import { popSelfOnBack, slideCoverTransition } from '../services/NavPush';
 
 @Builder
 export function PawAppPageBuilder(_name: string, param: Object) {
@@ -33,6 +34,10 @@ export struct PawAppPage {
   private controller: webview.WebviewController = new webview.WebviewController();
   private themeListener: ThemeListener | null = null;
 
+  // 导航栈（onReady 时由框架注入）：标题栏返回按钮与系统侧滑都走它出栈
+  private stack: NavPathStack | null = null;
+  // 二级页水平覆盖转场的位移（百分比）：由 NavPush.slideCoverTransition 驱动
+  @State pageX: string = '0%';
   aboutToAppear(): void {
     const rec: Record<string, Object> = this.params as Record<string, Object>;
     const id: Object = rec['appId'];
@@ -157,6 +162,21 @@ export struct PawAppPage {
     // 否则下端/左右两侧会露出窗口底色（页面底部输入条一带表现为黑带）
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM],
       [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM, LayoutSafeAreaEdge.START, LayoutSafeAreaEdge.END])
+    // 二级页转场：整页自右水平覆盖进来（退出滑回右侧）——见 services/NavPush.slideCoverTransition。
+    // 系统默认档在分栏下动的是"内容区左边缘 0 → 分栏位"，观感从左侧摊过来（判"方向反了"），
+    // 故改用官方 customTransition（NavDestinationTransitionDelegate）自己定方向。
+    .customTransition((op: NavigationOperation, isEnter: boolean)
+      : Array<NavDestinationTransition> | undefined => slideCoverTransition(op, isEnter,
+        (v: string): void => { this.pageX = v; }))
+    .translate({ x: this.pageX })
+    // 本页未从入栈参数带 NavPathStack：按官方口径在 onReady 取导航栈（NavDestinationContext.pathStack）
+    .onReady((ctx: NavDestinationContext): void => {
+      this.stack = ctx.pathStack;
+    })
+    // 返回键：系统侧滑与标题栏左上角返回按钮都投递到当前 NavDestination 的 onBackPressed
+    //（官方 FAQ faqs-arkui-1117：该回调"支持拦截系统侧滑及 NavDestination 标题栏的返回事件"）；
+    // 没挂它时标题栏返回按钮点了没有反应 —— 这里自己出栈并消费。
+    .onBackPressed((): boolean => popSelfOnBack(this.stack))
     .titleBar({
       // 二级页各自配标题栏（含返回图标区）：静止态即磨砂 + 系统转场动画。
       style: {

@@ -27,6 +27,8 @@ export interface DisplayPart {
   text?: string;
   url?: string;
   name?: string;
+  // 文件卡副标题（工具产出文件的变化类型：新建 / 修改 / 发送）；其它媒体分片不用
+  note?: string;
 }
 
 export interface DisplayMessage {
@@ -39,6 +41,9 @@ export interface DisplayMessage {
   toolCallId?: string;
   toolInput?: string;
   toolOutput?: string;
+  // 工具调用的原始参数（JSON 文本）：工具产出文件清单要从 file_path 取值渲染，
+  // 不能只靠 toolInput（那是给人看的格式化详情）
+  toolArgs?: string;
   pending?: boolean;
   error?: string;
 }
@@ -132,6 +137,7 @@ function toDisplayMessage(message: Record<string, Object>, index: number): Displ
     out.toolCallId = tool.callId;
     out.toolInput = tool.input;
     out.toolOutput = tool.output;
+    out.toolArgs = tool.toolArgs;
   }
   return out;
 }
@@ -255,6 +261,7 @@ interface ToolInfo {
   callId?: string;
   input?: string;
   output?: string;
+  toolArgs?: string;
   parts: DisplayPart[];
 }
 
@@ -323,7 +330,9 @@ function extractTool(message: Record<string, Object>): ToolInfo {
   const input: string | undefined = callData !== null ? formatToolDetail(callData['arguments']) : undefined;
   const output: string | undefined = formatToolDetail(outputVal);
   const parts: DisplayPart[] = mediaPartsFromArguments(argsVal).concat(mediaPartsFromUnknown(outputVal));
-  return { name: name, state: state, callId: callId, input: input, output: output, parts: parts };
+  // 原始参数（JSON 文本）另存一份：工具产出文件清单要按 file_path 取值（格式化后的 input 取不到）
+  const toolArgs: string | undefined = typeof argsVal === 'string' ? argsVal as string : undefined;
+  return { name: name, state: state, callId: callId, input: input, output: output, parts: parts, toolArgs: toolArgs };
 }
 
 function mediaPartsFromArguments(value: Object | undefined): DisplayPart[] {
@@ -624,6 +633,141 @@ export function partsTextLen(parts: DisplayPart[]): number {
     }
   }
   return n;
+}
+
+// 流式工具事件的媒体分片：与历史快照同一套抽取（参数里的 file_path / image_path… 、
+// 输出里的文件路径），使工具产出的文件在**运行中**就出现在文件清单里，而不是等回合结束重取历史。
+export function toolMediaParts(inputText: string | undefined, outputText: string | undefined): DisplayPart[] {
+  const out: DisplayPart[] = [];
+  if (inputText !== undefined && inputText.length > 0) {
+    for (const p of mediaPartsFromArguments(inputText)) {
+      out.push(p);
+    }
+  }
+  if (outputText !== undefined && outputText.length > 0) {
+    for (const p of mediaPartsFromUnknown(outputText)) {
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+// 媒体分片合并（按 url 去重、保持原顺序）：流式合并同一工具段时避免同一文件重复出现
+export function mergeMediaParts(base: DisplayPart[], add: DisplayPart[]): DisplayPart[] {
+  const out: DisplayPart[] = base.slice();
+  const seen: string[] = out.map((p: DisplayPart): string => mediaKey(p));
+  for (const p of add) {
+    const k: string = mediaKey(p);
+    if (seen.indexOf(k) < 0) {
+      seen.push(k);
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+// ============ 回合文件清单（对齐 console features/files-workspace/ResponseArtifactList.tsx）============
+// 与"媒体分片"不同：这里的文件来自工具调用的**参数**（file_path），因此：
+//   · 支持相对路径（工具写工作区时就是相对路径）与任意扩展名（md/log/code…不白名单）；
+//   · 只看 file 读写工具与 send_file_to_user（别的工具里出现的路径不算产出）；
+//   · 失败态（denied / error / cancelled…）不算产出；
+//   · 跑动过程中工具消息一到就在清单里出现（不需要等回合结束重取历史）。
+const FILE_IO_TOOLS: string[] = ['appendfile', 'editfile', 'writefile'];
+const SEND_FILE_TOOL: string = 'sendfiletouser';
+const FAILED_TOOL_STATES: string[] = [
+  'cancelled', 'canceled', 'denied', 'error', 'failed', 'interrupted', 'rejected'
+];
+
+export interface ResponseArtifact {
+  name: string;
+  path: string;
+  note: string;    // 变化类型（i18n 资源名后缀：created / modified / sent）
+}
+
+// 工具名归一（去掉非字母数字再小写）：wire 上是 write_file / write file / WriteFile 都能认
+function normalizedToolName(name: string): string {
+  return name.replace(/[^a-z\d]/gi, '').toLowerCase();
+}
+
+function artifactNote(tool: string): string {
+  if (tool === SEND_FILE_TOOL) {
+    return 'sent';
+  }
+  return tool === 'writefile' ? 'created' : 'modified';
+}
+
+export function responseArtifactsOf(messages: DisplayMessage[]): ResponseArtifact[] {
+  const out: ResponseArtifact[] = [];
+  for (const m of messages) {
+    if (m.kind !== 'tool' || m.toolName === undefined || m.toolName.length === 0) {
+      continue;
+    }
+    const tool: string = normalizedToolName(m.toolName);
+    if (tool !== SEND_FILE_TOOL && FILE_IO_TOOLS.indexOf(tool) < 0) {
+      continue;
+    }
+    const state: string = (m.toolState !== undefined ? m.toolState : '').toLowerCase();
+    if (FAILED_TOOL_STATES.indexOf(state) >= 0) {
+      continue;
+    }
+    const args: Record<string, Object> | null = asRecord(parseJson(
+      m.toolArgs !== undefined ? m.toolArgs : ''));
+    if (args === null) {
+      continue;
+    }
+    const raw: Object = args['file_path'];
+    if (typeof raw !== 'string') {
+      continue;
+    }
+    const path: string = (raw as string).trim();
+    if (path.length === 0 || !isResolvablePath(path)) {
+      continue;
+    }
+    const segs: string[] = path.replace(/\\/g, '/').split('/');
+    const name: string = segs.length > 0 && segs[segs.length - 1].length > 0
+      ? segs[segs.length - 1] : path;
+    const at: number = out.findIndex((a: ResponseArtifact): boolean => a.path === path);
+    if (at >= 0) {
+      out.splice(at, 1);
+    }
+    out.push({ name: name, path: path, note: artifactNote(tool) });
+  }
+  return out.reverse();
+}
+
+// 可解析的路径：绝对路径 / home 简写 / 盘符，或干净的相对路径（不允许空段与 .. 上跳）
+function isResolvablePath(path: string): boolean {
+  const p: string = path.replace(/\\/g, '/');
+  if (p.startsWith('/') || p.startsWith('~') || /^[a-z]:\//i.test(p)) {
+    return true;
+  }
+  const decoded: string = p.replace(/^(?:\.\/)+/, '');
+  if (decoded.length === 0 || /^[a-z]:/i.test(decoded)) {
+    return false;
+  }
+  for (const seg of decoded.split('/')) {
+    if (seg.length === 0 || seg === '.' || seg === '..') {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** 回合文件清单：工具产出文件 + 工具媒体分片（图片 / 截图等），按 url 去重（先文件后媒体）。 */
+export function turnFilesOf(responses: DisplayMessage[]): DisplayPart[] {
+  const out: DisplayPart[] = [];
+  for (const a of responseArtifactsOf(responses)) {
+    out.push({ type: 'file', url: a.path, name: a.name, note: a.note });
+  }
+  const seen: string[] = out.map((p: DisplayPart): string => mediaKey(p));
+  for (const p of resultMediaOf(responses, answerIndexOf(responses))) {
+    const k: string = mediaKey(p);
+    if (seen.indexOf(k) < 0) {
+      seen.push(k);
+      out.push(p);
+    }
+  }
+  return out;
 }
 
 function mediaKey(part: DisplayPart): string {

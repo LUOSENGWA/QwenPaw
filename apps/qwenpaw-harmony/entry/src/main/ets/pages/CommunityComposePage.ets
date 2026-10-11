@@ -7,6 +7,7 @@
  */
 
 import { HdsNavDestination, ScrollEffectType, BlurStrategy, hdsMaterial } from '@kit.UIDesignKit';
+import { areaWidthOf, wideClampW } from '../theme/Breakpoints';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import {
   CommunityArticleType, CommunityArticleDraft, CommunityMeta, getCommunityMeta,
@@ -16,7 +17,8 @@ import { CommunityArticleParam } from '../components/CommunityTab';
 import { ThemeManager, ThemeSnapshot } from '../theme/ThemeManager';
 import { UiTokens } from '../theme/UiTokens';
 import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
-import { LengthMetrics } from '@kit.ArkUI';
+
+import { popSelfOnBack, slideCoverTransition } from '../services/NavPush';
 
 const TITLE_MAX: number = 256;
 
@@ -38,7 +40,17 @@ export struct CommunityComposePage {
   @State isDark: boolean = false;
   @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
   private stack: NavPathStack | null = null;
+  // 二级页水平覆盖转场的位移（百分比）：由 NavPush.slideCoverTransition 驱动
+  @State pageX: string = '0%';
   private latch: PressLatch = new PressLatch();
+
+  // 大屏（平板/电脑）内容列限宽：官方《页面布局场景》缩进布局 —— 空间充足时内容列居中、两侧留白；
+  // 宽度由外层满宽容器 onAreaChange 实时上报（跟随窗口缩放），实现见 theme/Breakpoints
+  @State pageW: number = 0;
+
+  private onPageArea = (_old: Area, now: Area): void => {
+    this.pageW = areaWidthOf(now, this.pageW);
+  };
 
   aboutToAppear(): void {
     const rec: Record<string, Object> = this.params as Record<string, Object>;
@@ -144,128 +156,145 @@ export struct CommunityComposePage {
 
   build() {
     HdsNavDestination() {
-      Scroll() {
-        Column() {
-          Text($r('app.string.community_field_type'))
-            .fontSize(UiTokens.fsCaption)
-            .fontColor($r('app.color.text_tertiary'))
-            .width('100%')
-            .margin({ top: 4, bottom: 8 })
-
-          Row({ space: 7 }) {
-            ForEach(this.typeOptions(), (type: CommunityArticleType) => {
-              Text(type.label)
-                .fontSize(UiTokens.fsSecondary)
-                .fontColor(this.articleType === type.code
-                  ? Color.White : $r('app.color.text_secondary'))
-                .height(34)
-                .padding({ left: 14, right: 14 })
-                .borderRadius(17)
-                .backgroundColor(this.articleType === type.code
-                  ? this.accent() : $r('app.color.card_bg'))
-                .onClick((): void => {
-                  this.articleType = type.code;
-                })
-            }, (type: CommunityArticleType) => type.code)
-          }
-          .width('100%')
-
-          TextInput({ placeholder: $r('app.string.community_title_placeholder'), text: $$this.title })
-            .maxLength(TITLE_MAX)
-            .fontSize(20)
-            .fontWeight(FontWeight.Medium)
-            .caretColor(this.accent())
-            .backgroundColor(Color.Transparent)
-            .fontColor($r('app.color.text_primary_strong'))
-            .placeholderColor($r('app.color.placeholder'))
-            .placeholderFont({ size: 20 })
-            .padding({ left: 0, right: 0 })
-            .height(52)
-            .margin({ top: 18 })
-
-          Divider()
-            .color($r('app.color.line'))
-
-          TextArea({ placeholder: $r('app.string.community_body_placeholder'), text: $$this.body })
-            .fontSize(UiTokens.fsBody)
-            .caretColor(this.accent())
-            .backgroundColor(Color.Transparent)
-            .fontColor($r('app.color.text_primary_strong'))
-            .placeholderColor($r('app.color.placeholder'))
-            .padding({ left: 0, right: 0, top: 12 })
-            .height(240)
-
-          Text($r('app.string.community_field_tags'))
-            .fontSize(UiTokens.fsCaption)
-            .fontColor($r('app.color.text_tertiary'))
-            .width('100%')
-            .margin({ top: 10, bottom: 6 })
-          TextInput({ placeholder: $r('app.string.community_tags_placeholder'), text: $$this.tags })
-            .fontSize(UiTokens.fsSecondary)
-            .caretColor(this.accent())
-            .backgroundColor($r('app.color.card_bg'))
-            .fontColor($r('app.color.input_text'))
-            .placeholderColor($r('app.color.placeholder'))
-            .placeholderFont({ size: UiTokens.fsSecondary })
-            .height(44)
-            .borderRadius(12)
-            .padding({ left: 12, right: 12 })
-
-          Row({ space: 9 }) {
-            Image($r('app.media.shield_check'))
-              .width(17).height(17)
-              .fillColor(this.accent())
-            Text($r('app.string.community_privacy_note'))
-              .fontSize(UiTokens.fsChip)
+      Row() {
+        Scroll() {
+          Column() {
+            Text($r('app.string.community_field_type'))
+              .fontSize(UiTokens.fsCaption)
               .fontColor($r('app.color.text_tertiary'))
-              .lineHeight(17)
-              .layoutWeight(1)
+              .width('100%')
+              .margin({ top: 4, bottom: 8 })
+
+            Row({ space: 7 }) {
+              ForEach(this.typeOptions(), (type: CommunityArticleType) => {
+                Text(type.label)
+                  .fontSize(UiTokens.fsSecondary)
+                  .fontColor(this.articleType === type.code
+                    ? Color.White : $r('app.color.text_secondary'))
+                  .height(34)
+                  .padding({ left: 14, right: 14 })
+                  .borderRadius(17)
+                  .backgroundColor(this.articleType === type.code
+                    ? this.accent() : $r('app.color.card_bg'))
+                  .onClick((): void => {
+                    this.articleType = type.code;
+                  })
+              }, (type: CommunityArticleType) => type.code)
+            }
+            .width('100%')
+
+            TextInput({ placeholder: $r('app.string.community_title_placeholder'), text: $$this.title })
+              .maxLength(TITLE_MAX)
+              .fontSize(20)
+              .fontWeight(FontWeight.Medium)
+              .caretColor(this.accent())
+              .backgroundColor(Color.Transparent)
+              .fontColor($r('app.color.text_primary_strong'))
+              .placeholderColor($r('app.color.placeholder'))
+              .placeholderFont({ size: 20 })
+              .padding({ left: 0, right: 0 })
+              .height(52)
+              .margin({ top: 18 })
+
+            Divider()
+              .color($r('app.color.line'))
+
+            TextArea({ placeholder: $r('app.string.community_body_placeholder'), text: $$this.body })
+              .fontSize(UiTokens.fsBody)
+              .caretColor(this.accent())
+              .backgroundColor(Color.Transparent)
+              .fontColor($r('app.color.text_primary_strong'))
+              .placeholderColor($r('app.color.placeholder'))
+              .padding({ left: 0, right: 0, top: 12 })
+              .height(240)
+
+            Text($r('app.string.community_field_tags'))
+              .fontSize(UiTokens.fsCaption)
+              .fontColor($r('app.color.text_tertiary'))
+              .width('100%')
+              .margin({ top: 10, bottom: 6 })
+            TextInput({ placeholder: $r('app.string.community_tags_placeholder'), text: $$this.tags })
+              .fontSize(UiTokens.fsSecondary)
+              .caretColor(this.accent())
+              .backgroundColor($r('app.color.card_bg'))
+              .fontColor($r('app.color.input_text'))
+              .placeholderColor($r('app.color.placeholder'))
+              .placeholderFont({ size: UiTokens.fsSecondary })
+              .height(44)
+              .borderRadius(12)
+              .padding({ left: 12, right: 12 })
+
+            Row({ space: 9 }) {
+              Image($r('app.media.shield_check'))
+                .width(17).height(17)
+                .fillColor(this.accent())
+              Text($r('app.string.community_privacy_note'))
+                .fontSize(UiTokens.fsChip)
+                .fontColor($r('app.color.text_tertiary'))
+                .lineHeight(17)
+                .layoutWeight(1)
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Top)
+            .padding(13)
+            .borderRadius(12)
+            .backgroundColor($r('app.color.card_bg'))
+            .margin({ top: 16, bottom: 8 })
+
+            Text(this.publishing
+              ? $r('app.string.community_publishing') : $r('app.string.community_publish'))
+              .fontSize(UiTokens.fsBody)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(Color.White)
+              .textAlign(TextAlign.Center)
+              .width('100%')
+              .height(48)
+              .borderRadius(24)
+              .backgroundColor(this.accent())
+              .opacity(this.publishing ? 0.6 : 1)
+              .scale({ x: this.pressed === 0 ? PRESS_SCALE : 1, y: this.pressed === 0 ? PRESS_SCALE : 1 })
+              .visualEffect(pressEffect(this.pressed === 0))
+              .margin({ top: 12, bottom: 24 })
+              .onTouch((e: TouchEvent): void => {
+                pressTouch(this.getUIContext(), e, this.latch, (v: boolean): void => {
+                  this.pressed = v ? 0 : -1;
+                });
+              })
+              .onClick((): void => {
+                this.publish();
+              })
           }
           .width('100%')
-          .alignItems(VerticalAlign.Top)
-          .padding(13)
-          .borderRadius(12)
-          .backgroundColor($r('app.color.card_bg'))
-          .margin({ top: 16, bottom: 8 })
-
-          Text(this.publishing
-            ? $r('app.string.community_publishing') : $r('app.string.community_publish'))
-            .fontSize(UiTokens.fsBody)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(Color.White)
-            .textAlign(TextAlign.Center)
-            .width('100%')
-            .height(48)
-            .borderRadius(24)
-            .backgroundColor(this.accent())
-            .opacity(this.publishing ? 0.6 : 1)
-            .scale({ x: this.pressed === 0 ? PRESS_SCALE : 1, y: this.pressed === 0 ? PRESS_SCALE : 1 })
-            .visualEffect(pressEffect(this.pressed === 0))
-            .margin({ top: 12, bottom: 24 })
-            .onTouch((e: TouchEvent): void => {
-              pressTouch(this.getUIContext(), e, this.latch, (v: boolean): void => {
-                this.pressed = v ? 0 : -1;
-              });
-            })
-            .onClick((): void => {
-              this.publish();
-            })
+          .alignItems(HorizontalAlign.Start)
+          .padding({
+            top: UiTokens.topInset, left: UiTokens.pageHMargin, right: UiTokens.pageHMargin
+          })
         }
-        .width('100%')
-        .alignItems(HorizontalAlign.Start)
-        .padding({
-          top: UiTokens.topInset, left: UiTokens.pageHMargin, right: UiTokens.pageHMargin
-        })
+        .width(wideClampW(this.pageW))
+        .height('100%')
+        .scrollBar(BarState.Off)
+        .align(Alignment.Top)
       }
       .width('100%')
       .height('100%')
-      .scrollBar(BarState.Off)
-      .align(Alignment.Top)
+      .justifyContent(FlexAlign.Center)
+      .onAreaChange(this.onPageArea)
     }
     // 内容也扩到安全区外（布局级，与 expandSafeArea 同设时优先）：二级页四边都扩，
     // 否则下端/左右两侧会露出窗口底色（页面底部输入条一带表现为黑带）
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM],
       [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM, LayoutSafeAreaEdge.START, LayoutSafeAreaEdge.END])
+    // 二级页转场：整页自右水平覆盖进来（退出滑回右侧）——见 services/NavPush.slideCoverTransition。
+    // 系统默认档在分栏下动的是"内容区左边缘 0 → 分栏位"，观感从左侧摊过来（判"方向反了"），
+    // 故改用官方 customTransition（NavDestinationTransitionDelegate）自己定方向。
+    .customTransition((op: NavigationOperation, isEnter: boolean)
+      : Array<NavDestinationTransition> | undefined => slideCoverTransition(op, isEnter,
+        (v: string): void => { this.pageX = v; }))
+    .translate({ x: this.pageX })
+    // 返回键：系统侧滑与标题栏左上角返回按钮都投递到当前 NavDestination 的 onBackPressed
+    //（官方 FAQ faqs-arkui-1117：该回调"支持拦截系统侧滑及 NavDestination 标题栏的返回事件"）；
+    // 没挂它时标题栏返回按钮点了没有反应 —— 这里自己出栈并消费。
+    .onBackPressed((): boolean => popSelfOnBack(this.stack))
     .titleBar({
       style: {
         scrollEffectOpts: {

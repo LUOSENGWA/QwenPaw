@@ -11,14 +11,16 @@
  * （同一组件挂多个 bindSheet 只有最后一个生效）。
  */
 
-import { common, Want, wantConstant } from '@kit.AbilityKit';
+import { common } from '@kit.AbilityKit';
 import { http } from '@kit.NetworkKit';
-import { picker, fileIo as fs, fileUri } from '@kit.CoreFileKit';
-import { filePreview } from '@kit.PreviewKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
 import { doRequest, jsonOf } from '../services/ConnectionService';
+import { openCachedFilePreview,
+  saveCachedFileWithPicker, openCachedFileWithOtherApp } from '../services/MediaActions';
 import { QpConnection, loadConnection } from '../services/ConnectionStore';
 import { PickedFile, pickFiles, removeTemp } from '../services/AttachmentPicker';
 import { IosGroup, IosRow } from './IosList';
+import { FileTreeRow } from './FileTreeRow';
 import { ModuleEmpty, ModuleError, ModuleFooter, ModuleLoading } from './ModuleStates';
 import { SheetGate, moduleSheetOptions } from './SheetGate';
 import { contextMenuOptions } from '../theme/MenuMaterial';
@@ -36,6 +38,13 @@ class FileEntry {
   kind: string = 'file';        // file | directory
   size: number = -1;            // -1 = 目录（接口返回 null）
   previewKind: string = '';     // text | csv | image | pdf | binary | directory
+}
+
+// 文件树的一行（宽屏横排专用）：条目 + 缩进层级 + 该目录是否已展开
+interface TreeRow {
+  entry: FileEntry;
+  depth: number;
+  expanded: boolean;
 }
 
 function strOf(value: Object, fallback: string): string {
@@ -113,44 +122,6 @@ async function uploadWorkspaceFiles(conn: QpConnection, dir: string,
   }
 }
 
-// 扩展名 → mimeType（对齐 Preview Kit《filePreview（文件预览）》支持类型表；
-// 未列出的后缀传空串，官方口径：系统会通过 uri 后缀自行判断文件格式）
-const PREVIEW_MIME: Record<string, string> = {
-  'pdf': 'application/pdf',
-  'doc': 'application/msword',
-  'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'xls': 'application/vnd.ms-excel',
-  'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'ppt': 'application/vnd.ms-powerpoint',
-  'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'csv': 'text/csv',
-  'ofd': 'general.ofd',
-  'jpg': 'image/jpeg',
-  'jpeg': 'image/jpeg',
-  'png': 'image/png',
-  'gif': 'image/gif',
-  'webp': 'image/webp',
-  'bmp': 'image/bmp',
-  'svg': 'image/svg+xml',
-  'mp4': 'video/mp4',
-  'mkv': 'video/x-matroska',
-  'ts': 'video/mp2ts',
-  'm4a': 'audio/mp4a-latm',
-  'aac': 'audio/aac',
-  'mp3': 'audio/mpeg',
-  'ogg': 'audio/ogg',
-  'wav': 'audio/x-wav'
-};
-
-function mimeOf(name: string): string {
-  const dot: number = name.lastIndexOf('.');
-  if (dot < 0) {
-    return '';
-  }
-  const mime: string = PREVIEW_MIME[name.slice(dot + 1).toLowerCase()];
-  return typeof mime === 'string' ? mime : '';
-}
-
 // 取二进制内容（预览与保存共用同一次下载）
 async function fetchWorkspaceFile(conn: QpConnection, entry: FileEntry): Promise<ArrayBuffer> {
   const header: Record<string, Object> = authHeader(conn);
@@ -188,19 +159,6 @@ function writeCacheText(ctx: common.Context, name: string, text: string): string
   return path;
 }
 
-// 交给系统选择/拉起可打开该文件的其它应用（官方 FAQ《如何实现通过调用其他已安装的应用来打开特定文件》：
-// 隐式 Want + FLAG_AUTH_READ_URI_PERMISSION 完成 uri 转授权，无需额外权限声明）
-async function openWithOtherApp(ctx: common.UIAbilityContext, name: string, text: string): Promise<void> {
-  const path: string = writeCacheText(ctx, name, text);
-  const want: Want = {
-    action: 'ohos.want.action.viewData',
-    uri: fileUri.getUriFromPath(path),
-    type: mimeOf(name),
-    flags: wantConstant.Flags.FLAG_AUTH_READ_URI_PERMISSION
-  };
-  await ctx.startAbility(want);
-}
-
 // 写入应用缓存目录并返回路径：系统预览服务按 uri 读取（沙箱文件经 fileUri 转授权）
 function writeCacheFile(ctx: common.Context, name: string, buffer: ArrayBuffer): string {
   const path: string = `${ctx.cacheDir}/${Date.now()}-${name.length > 0 ? name : 'qwenpaw-file'}`;
@@ -213,25 +171,6 @@ function writeCacheFile(ctx: common.Context, name: string, buffer: ArrayBuffer):
   return path;
 }
 
-// 系统保存对话框选位置 → 写入（返回值 false = 用户取消保存；data 支持二进制与文本两种载荷）
-async function saveWithPicker(ctx: common.UIAbilityContext, name: string,
-  data: ArrayBuffer | string): Promise<boolean> {
-  const saveOptions: picker.DocumentSaveOptions = new picker.DocumentSaveOptions();
-  saveOptions.newFileNames = [name.length > 0 ? name : 'qwenpaw-file'];
-  const view: picker.DocumentViewPicker = new picker.DocumentViewPicker(ctx);
-  const uris: string[] = await view.save(saveOptions);
-  if (uris.length === 0) {
-    return false;
-  }
-  const file: fs.File = fs.openSync(uris[0], fs.OpenMode.READ_WRITE);
-  try {
-    fs.writeSync(file.fd, data);
-  } finally {
-    fs.closeSync(file);
-  }
-  return true;
-}
-
 @Component
 export struct ModuleFiles {
   @State dirPath: string = '';
@@ -240,6 +179,14 @@ export struct ModuleFiles {
   @State error: string = '';
   @State busy: boolean = false;
   @State busyLabel: string = '';
+  // 宽屏横排（平板/电脑横屏；由 ModulePage 按整页实测尺寸判定后传入）：
+  // 这种形态下点文件夹 = 原地展开成文件树，而不是整页进到该目录里
+  @Prop wide: boolean = false;
+  // 文件树：已展开的目录（按路径）与展平后的行序列（见 buildTree）
+  @State treeOpen: string[] = [];
+  @State treeRows: TreeRow[] = [];
+  // 已取过的子目录内容（展开过一次就不再请求；重新 load 时清空）
+  private childCache: Map<string, FileEntry[]> = new Map<string, FileEntry[]>();
   @State sheetShown: boolean = false;
   @State sheetEdit: boolean = false;      // false = 只读预览，true = 可编辑
   @State draftPath: string = '';
@@ -281,6 +228,39 @@ export struct ModuleFiles {
     return this.getUIContext().getHostContext() as common.UIAbilityContext;
   }
 
+  // 列一层目录（GET /api/workspace/tree，单层、分页上限 TREE_LIMIT）：
+  // 进目录与「文件树展开子目录」共用同一份实现
+  private async listDir(path: string): Promise<FileEntry[]> {
+    const c: QpConnection | null = this.conn;
+    if (c === null) {
+      throw new Error(this.t($r('app.string.module_not_connected')));
+    }
+    const url: string = `${c.baseUrl}/api/workspace/tree?path=${encodeURIComponent(path)}`
+      + `&limit=${TREE_LIMIT}&root=workspace`;
+    const resp: http.HttpResponse = await doRequest(url, http.RequestMethod.GET, null,
+      c.token.length > 0 ? c.token : null, c.agentId);
+    if (resp.responseCode < 200 || resp.responseCode >= 300) {
+      throw new Error(`HTTP ${resp.responseCode}`);
+    }
+    const data: Record<string, Object> = jsonOf(resp);
+    const arr: Object = data['entries'];
+    const out: FileEntry[] = [];
+    if (Array.isArray(arr)) {
+      for (const item of arr as Object[]) {
+        const r: Record<string, Object> = item as Record<string, Object>;
+        const e: FileEntry = new FileEntry();
+        e.name = strOf(r['name'], '');
+        e.path = strOf(r['path'], '');
+        e.kind = strOf(r['kind'], 'file');
+        e.previewKind = strOf(r['preview_kind'], '');
+        const size: Object = r['size'];
+        e.size = typeof size === 'number' ? size as number : -1;
+        out.push(e);
+      }
+    }
+    return out;
+  }
+
   private async load(): Promise<void> {
     const ctx: common.UIAbilityContext = await this.context();
     const c: QpConnection | null = await loadConnection(ctx);
@@ -291,35 +271,68 @@ export struct ModuleFiles {
     }
     this.conn = c;
     try {
-      const url: string = `${c.baseUrl}/api/workspace/tree?path=${encodeURIComponent(this.dirPath)}`
-        + `&limit=${TREE_LIMIT}&root=workspace`;
-      const resp: http.HttpResponse = await doRequest(url, http.RequestMethod.GET, null,
-        c.token.length > 0 ? c.token : null, c.agentId);
-      if (resp.responseCode < 200 || resp.responseCode >= 300) {
-        throw new Error(`HTTP ${resp.responseCode}`);
-      }
-      const data: Record<string, Object> = jsonOf(resp);
-      const arr: Object = data['entries'];
-      const out: FileEntry[] = [];
-      if (Array.isArray(arr)) {
-        for (const item of arr as Object[]) {
-          const r: Record<string, Object> = item as Record<string, Object>;
-          const e: FileEntry = new FileEntry();
-          e.name = strOf(r['name'], '');
-          e.path = strOf(r['path'], '');
-          e.kind = strOf(r['kind'], 'file');
-          e.previewKind = strOf(r['preview_kind'], '');
-          const size: Object = r['size'];
-          e.size = typeof size === 'number' ? size as number : -1;
-          out.push(e);
-        }
-      }
-      this.entries = out;
+      this.entries = await this.listDir(this.dirPath);
+      // 换了一层目录：展开态与子目录缓存都作废，按新的一层重建
+      this.childCache.clear();
+      this.treeOpen = [];
+      this.buildTree();
       this.error = '';
     } catch (e) {
       this.error = (e as Error).message;
     }
     this.loaded = true;
+  }
+
+  // ============ 文件树（宽屏横排）============
+  // 已展开目录按层级展平成一行一行的序列（展开态是树唯一的可变状态，行序列由它派生）
+  private buildTree(): void {
+    const rows: TreeRow[] = [];
+    this.pushLevel(this.entries, 0, rows);
+    this.treeRows = rows;
+  }
+
+  private pushLevel(list: FileEntry[], depth: number, rows: TreeRow[]): void {
+    for (const e of list) {
+      const dir: boolean = e.kind === 'directory';
+      const open: boolean = dir && this.treeOpen.indexOf(e.path) >= 0;
+      const r: TreeRow = { entry: e, depth: depth, expanded: open };
+      rows.push(r);
+      if (open) {
+        const kids: FileEntry[] | undefined = this.childCache.get(e.path);
+        if (kids !== undefined) {
+          this.pushLevel(kids, depth + 1, rows);
+        }
+      }
+    }
+  }
+
+  // 文件树里点文件夹：原地展开 / 收起（首次展开才去取子目录，之后走缓存）
+  private async toggleFolder(e: FileEntry): Promise<void> {
+    const next: string[] = this.treeOpen.slice();
+    const at: number = next.indexOf(e.path);
+    if (at >= 0) {
+      next.splice(at, 1);
+      this.treeOpen = next;
+      this.buildTree();
+      return;
+    }
+    if (this.childCache.get(e.path) === undefined) {
+      this.busy = true;
+      this.busyLabel = this.t($r('app.string.module_files_loading'));
+      try {
+        this.childCache.set(e.path, await this.listDir(e.path));
+      } catch (err) {
+        this.toast((err as Error).message);
+        this.busy = false;
+        this.busyLabel = '';
+        return;
+      }
+      this.busy = false;
+      this.busyLabel = '';
+    }
+    next.push(e.path);
+    this.treeOpen = next;
+    this.buildTree();
   }
 
   private openPreview(name: string, text: string): void {
@@ -349,7 +362,9 @@ export struct ModuleFiles {
     const segs: string[] = this.draftPath.split('/');
     const name: string = segs.length > 0 ? segs[segs.length - 1] : 'qwenpaw-file.txt';
     try {
-      const saved: boolean = await saveWithPicker(ctx, name, this.draftText);
+      // 与预览/分享共用同一套出口：先落缓存，再交给系统 picker 选目录
+      const path: string = writeCacheText(ctx, name, this.draftText);
+      const saved: boolean = await saveCachedFileWithPicker(ctx, path, name);
       if (saved) {
         this.toast(this.t($r('app.string.module_files_downloaded')));
       }
@@ -364,7 +379,8 @@ export struct ModuleFiles {
     const segs: string[] = this.draftPath.split('/');
     const name: string = segs.length > 0 ? segs[segs.length - 1] : 'qwenpaw-file.md';
     try {
-      await openWithOtherApp(ctx, name, this.draftText);
+      const path: string = writeCacheText(ctx, name, this.draftText);
+      await openCachedFileWithOtherApp(ctx, path, name);
     } catch (err) {
       this.toast(this.t($r('app.string.module_files_open_external_failed')));
     }
@@ -390,6 +406,11 @@ export struct ModuleFiles {
 
   private async openEntry(e: FileEntry): Promise<void> {
     if (e.kind === 'directory') {
+      // 宽屏横排：文件夹原地展开成树（层级缩进可见），不再整页进到该目录里
+      if (this.wide) {
+        await this.toggleFolder(e);
+        return;
+      }
       this.dirPath = e.path;
       this.loaded = false;
       await this.load();
@@ -446,11 +467,7 @@ export struct ModuleFiles {
       return;
     }
     try {
-      await filePreview.openPreview(ctx, {
-        title: e.name,
-        uri: fileUri.getUriFromPath(path),
-        mimeType: mimeOf(e.name)
-      });
+      await openCachedFilePreview(ctx, path, e.name);
     } catch (err) {
       this.toast(this.t($r('app.string.module_files_no_preview')));
       await this.saveToPicker(e);
@@ -478,7 +495,11 @@ export struct ModuleFiles {
     this.busy = true;
     this.busyLabel = this.t($r('app.string.module_files_downloading'));
     try {
-      const saved: boolean = await saveWithPicker(ctx, e.name, await fetchWorkspaceFile(c, e));
+      const path: string = await this.fetchToCache(c, ctx, e);
+      if (path.length === 0) {
+        return;
+      }
+      const saved: boolean = await saveCachedFileWithPicker(ctx, path, e.name);
       if (saved) {
         this.toast(this.t($r('app.string.module_files_downloaded')));
       }
@@ -591,7 +612,8 @@ export struct ModuleFiles {
     return opts;
   }
 
-  // 列表行（文本文件点开进编辑面板；其余类型点开交给系统预览服务）
+  // 清单行（窄屏形态）：文本文件点开进编辑面板，其余类型点开交给系统预览服务；
+  // 只有文件夹给"进入下一级"箭头（点开 = 整页进该目录）
   @Builder
   entryRow(e: FileEntry) {
     IosRow({
@@ -601,10 +623,26 @@ export struct ModuleFiles {
         : (sizeLabel(e.size).length > 0 ? sizeLabel(e.size)
           : this.t($r('app.string.module_files_file'))),
       tappable: !this.busy,
-      // 只有文件夹给尾部箭头；单文件不给（点开是预览/编辑，不是"进入下一级"）
       showChevron: e.kind === 'directory',
       onPress: (): void => {
         this.openEntry(e);
+      }
+    })
+  }
+
+  // 文件树行（宽屏横排形态）：层级缩进 + 引导线 + 展开箭头，点文件夹原地展开、不换页
+  @Builder
+  treeRow(r: TreeRow) {
+    FileTreeRow({
+      name: r.entry.name,
+      icon: this.iconOf(r.entry),
+      isDir: r.entry.kind === 'directory',
+      sizeText: r.entry.kind === 'directory' ? '' : sizeLabel(r.entry.size),
+      depth: r.depth,
+      expanded: r.expanded,
+      tappable: !this.busy,
+      onPress: (): void => {
+        this.openEntry(r.entry);
       }
     })
   }
@@ -861,6 +899,25 @@ export struct ModuleFiles {
               this.newFile();
             }
           })
+          if (this.wide) {
+            // 宽屏横排：树形呈现（层级缩进 + 展开/收起箭头），点文件夹不再换页
+            ForEach(this.treeRows, (r: TreeRow) => {
+              if (r.entry.kind === 'directory') {
+                this.treeRow(r)
+              } else {
+                Column() {
+                  this.treeRow(r)
+                }
+                .width('100%')
+                .bindContextMenu(this.menuPath === r.entry.path, this.fileMenu(r.entry),
+                  this.fileMenuOptions(r.entry))
+                .gesture(LongPressGesture({ duration: 300 })
+                  .onAction((): void => {
+                    this.menuPath = r.entry.path;
+                  }))
+              }
+            }, (r: TreeRow) => `${r.entry.path}|${r.expanded ? 1 : 0}|${r.depth}`)
+          } else {
           ForEach(this.entries, (e: FileEntry) => {
             if (e.kind === 'directory') {
               this.entryRow(e)
@@ -880,8 +937,9 @@ export struct ModuleFiles {
                 }))
             }
           }, (e: FileEntry) => e.path)
+          }
         }
-        if (this.entries.length === 0) {
+        if (!this.wide && this.entries.length === 0) {
           ModuleEmpty($r('app.media.folder'),
             this.t($r('app.string.module_files_empty_title')),
             this.t($r('app.string.module_files_empty_subtitle')))

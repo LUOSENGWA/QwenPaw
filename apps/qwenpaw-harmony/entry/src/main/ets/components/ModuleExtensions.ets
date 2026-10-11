@@ -22,7 +22,7 @@ import { ModuleEmpty, ModuleError, ModuleFooter, ModuleLoading } from './ModuleS
 import { SheetGate, moduleSheetOptions } from './SheetGate';
 import { requestPawApp } from '../services/AppEvents';
 import { UiTokens } from '../theme/UiTokens';
-import { PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
+
 import { isDarkMode, accentColor } from '../theme/Accent';
 
 const PATH_PLUGINS: string = '/plugins';
@@ -80,10 +80,8 @@ export struct ModuleExtensions {
   @State installing: string = '';
   @State sheetShown: boolean = false;
   @State sheetMode: string = MODE_NONE;
-  @State pressed: number = -1;
   @State isDark: boolean = false;
   private gate: SheetGate = new SheetGate();
-  private latch: PressLatch = new PressLatch();
   private conn: QpConnection | null = null;
 
   aboutToAppear(): void {

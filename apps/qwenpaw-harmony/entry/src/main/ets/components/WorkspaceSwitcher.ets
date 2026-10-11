@@ -27,8 +27,8 @@ export struct WorkspaceBadge {
   // 运行状态文案（由调用方给出，如「已连接」）与当前智能体名
   @Prop statusText: string = '';
   @Prop agentName: string = '';
-  // 外部连接变化（如重连/登出）时递增，触发重新取数
-  @Prop reloadToken: number = 0;
+  // 外部连接变化（如重连/登出/切换工作区）时递增 → 重取已配对连接列表（@Watch 才能真正生效）
+  @Prop @Watch('onReloadToken') reloadToken: number = 0;
   onSwitched: () => void = (): void => {
   };
   onAdd: () => void = (): void => {
@@ -42,6 +42,12 @@ export struct WorkspaceBadge {
 
   aboutToAppear(): void {
     this.dark = isDarkMode(this.ctx());
+    this.load();
+  }
+
+  // reloadToken 变化（会话页重连 / 登出 / 切换工作区后递增）→ 重取已配对连接，
+  // 徽章上的工作区名与面板里的列表跟着变（此前该 prop 无人读取，刷新实际没发生）
+  private onReloadToken(): void {
     this.load();
   }
 
@@ -187,7 +193,8 @@ export struct WorkspaceBadge {
     }
     // 列表尚未取回时用空壳，避免 build 期空指针（文案会随 load 完成后刷新）
     return this.list.length > 0 ? this.list[0] : {
-      baseUrl: '', token: '', username: '', agentId: '', source: 'private', serverMode: ''
+      baseUrl: '', token: '', username: '', agentId: '', source: 'private', serverMode: '',
+      platformAccessPath: ''
     };
   }
 

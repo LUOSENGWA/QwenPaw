@@ -11,6 +11,8 @@
  */
 
 import { common } from '@kit.AbilityKit';
+import { pushRoute, swapRoute } from '../services/NavPush';
+import { rememberPage } from '../services/LastPage';
 import { systemShare } from '@kit.ShareKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
 import {
@@ -21,7 +23,7 @@ import {
 import { getPlatformAccessToken } from '../services/PlatformSession';
 import { UiTokens } from '../theme/UiTokens';
 import { PressCard } from './PressCard';
-import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
+import { PRESS_SCALE, PressLatch, pressTouch } from '../theme/PressFx';
 import { isDarkMode, accentColor } from '../theme/Accent';
 
 const PAGE_SIZE: number = 12;
@@ -160,7 +162,9 @@ export struct CommunityTab {
 
   private openArticle(articleId: string): void {
     const param: CommunityArticleParam = { articleId: articleId, stack: this.navStack };
-    this.navStack.pushPath({ name: 'community-article', param: param });
+    // 记下「最后打开的文章」：分栏下切走页签再切回来，右栏恢复这篇文章（见 pages/Index.enterTab）
+    rememberPage(2, 'community-article', articleId);
+    swapRoute(this.navStack, 'community-article', param);
   }
 
   private shareArticle(article: CommunityArticleSummary): void {
@@ -198,7 +202,7 @@ export struct CommunityTab {
         secondaryButton: {
           value: this.t($r('app.string.community_login_action')),
           action: (): void => {
-            this.navStack.pushPath({ name: 'platform-login' });
+            pushRoute(this.navStack, 'platform-login');
           }
         }
       });

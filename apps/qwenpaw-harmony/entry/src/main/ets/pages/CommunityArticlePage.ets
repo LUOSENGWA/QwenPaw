@@ -8,9 +8,10 @@
 
 import { HdsNavDestination, ScrollEffectType, BlurStrategy, hdsMaterial } from '@kit.UIDesignKit';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
-import { window, KeyboardAvoidMode, curves, LengthMetrics, uiMaterial } from '@kit.ArkUI';
+import { window, KeyboardAvoidMode, curves, uiMaterial } from '@kit.ArkUI';
 import { systemShare } from '@kit.ShareKit';
 import { uniformTypeDescriptor as utd } from '@kit.ArkData';
+import { BusinessError } from '@kit.BasicServicesKit';
 import {
   CommunityComment, CommunityArticleDetail, getCommunityArticle, getCommunityComments,
   createCommunityComment, likeCommunityArticle, communityArticleUrl, communityInitials,
@@ -20,7 +21,8 @@ import { getPlatformAccessToken } from '../services/PlatformSession';
 import { PlatformLoginParam } from '../components/CommunityTab';
 import { ThemeManager, ThemeSnapshot, ThemeListener } from '../theme/ThemeManager';
 import { UiTokens, pxPerVp } from '../theme/UiTokens';
-import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
+import { areaWidthOf, BP_LG, CONTENT_MAX } from '../theme/Breakpoints';
+import { pushRoute, popSelfOnBack, slideCoverTransition } from '../services/NavPush';
 
 // 底部系统导航区保底值（vp）
 const NAV_FALLBACK_INSET: number = 12;
@@ -29,6 +31,12 @@ const DOCK_BLUR_RADIUS: number = 40;
 // 悬浮互动条本体高度（vp）= 聊天页同一口径（栏体高度 = chatComposerHeight + 1）与离底间距
 const DOCK_BAR_H: number = 59;
 const DOCK_BOTTOM_MARGIN: number = 12;
+
+// 评论正文的一段：url = true 表示这段是链接（单独上色 + 可点）
+interface LinkSpan {
+  text: string;
+  url: boolean;
+}
 
 @Builder
 export function CommunityArticlePageBuilder(_name: string, param: Object) {
@@ -46,16 +54,38 @@ export struct CommunityArticlePage {
   @State submitting: boolean = false;
   @State keyboardInset: number = 0;
   @State navInset: number = NAV_FALLBACK_INSET;
-  @State pressed: number = -1;
   @State isDark: boolean = false;
   @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
   private articleId: string = '';
   private stack: NavPathStack | null = null;
-  private latch: PressLatch = new PressLatch();
+  // 二级页水平覆盖转场的位移（百分比）：由 NavPush.slideCoverTransition 驱动
+  @State pageX: string = '0%';
   private themeListener: ThemeListener | null = null;
   private kbWindow: window.Window | null = null;
   private kbListener: ((data: window.AvoidAreaOptions) => void) | null = null;
   private prevKeyboardAvoidMode: KeyboardAvoidMode | null = null;
+
+  // 大屏（平板/电脑）横屏判定：官方《页面布局场景》的横向断点；与会话页分栏同一判据
+  //（宽度 ≥ 840vp 且横屏），同一设备上两处行为的切换条件保持一致
+  @State pageW: number = 0;
+  @State pageH: number = 0;
+
+  private isWide(): boolean {
+    return this.pageW >= BP_LG && this.pageW > this.pageH;
+  }
+
+  // 评论区栏宽：官方侧边栏口径 lg 档 = 屏宽的 40%，夹在 320–600vp 之间
+  private commentsPaneW(): number {
+    return Math.min(600, Math.max(320, Math.round(this.pageW * 0.4)));
+  }
+
+  private onPageArea = (_old: Area, now: Area): void => {
+    this.pageW = areaWidthOf(now, this.pageW);
+    const h: number = typeof now.height === 'number' ? now.height as number : 0;
+    if (h > 0 && Math.abs(h - this.pageH) > 0.5) {
+      this.pageH = h;
+    }
+  };
 
   aboutToAppear(): void {
     const rec: Record<string, Object> = this.params as Record<string, Object>;
@@ -186,7 +216,7 @@ export struct CommunityArticlePage {
           const stack: NavPathStack | null = this.stack;
           if (stack !== null) {
             const param: PlatformLoginParam = { returnTo: '', stack: stack };
-            stack.pushPath({ name: 'platform-login', param: param });
+            pushRoute(stack, 'platform-login', param);
           }
         }
       }
@@ -265,46 +295,52 @@ export struct CommunityArticlePage {
           // 按压弹性与手指跟随光；键盘避让沿用 KeyboardAvoidMode.NONE + avoidAreaChange。
           Tabs({ barPosition: BarPosition.End, index: 0 }) {
             TabContent() {
+            // 分栏（官方《页面布局场景》侧边栏；图文详情 + 评论区即其典型场景）：
+            // 左正文、右评论各自独立滚动，底部互动条仍通栏
+            if (this.isWide()) {
+              Row() {
+                List() {
+                  this.articleItems()
+                  this.dockSpacerItem()
+                }
+                .layoutWeight(1)
+                .height('100%')
+                .scrollBar(BarState.Off)
+                .linearGradientBlur(DOCK_BLUR_RADIUS, {
+                  fractionStops: [[0, 0], [0, 0.88], [1, 1]],
+                  direction: GradientDirection.Bottom
+                })
+                Column().width(1).height('100%').backgroundColor($r('app.color.line'))
+                Column() {
+                  // 右栏顶部让开沉浸标题栏带（与正文列首项 spacer 同口径）
+                  Column().width('100%').height(UiTokens.topInset)
+                  this.commentsHeaderRow()
+                  List() {
+                    this.commentItems()
+                  }
+                  .layoutWeight(1)
+                  .width('100%')
+                  .scrollBar(BarState.Off)
+                  .linearGradientBlur(DOCK_BLUR_RADIUS, {
+                    fractionStops: [[0, 0], [0, 0.88], [1, 1]],
+                    direction: GradientDirection.Bottom
+                  })
+                }
+                .width(this.commentsPaneW())
+                .height('100%')
+              }
+              .width('100%')
+              .height('100%')
+              .alignItems(VerticalAlign.Top)
+            } else {
             List() {
               ListItem() {
                 this.articleBlock()
               }
-            ListItem() {
-              Row() {
-                Text($r('app.string.community_all_comments'))
-                  .fontSize(UiTokens.fsBody)
-                  .fontWeight(FontWeight.Bold)
-                  .fontColor($r('app.color.text_primary_strong'))
-                Text(this.detail.article.commentCount.toString())
-                  .fontSize(UiTokens.fsCaption)
-                  .fontColor($r('app.color.text_tertiary'))
-                  .margin({ left: 6 })
-              }
-              .width('100%')
-              .alignItems(VerticalAlign.Center)
-              .padding({
-                left: UiTokens.pageHMargin, right: UiTokens.pageHMargin, top: 16, bottom: 8
-              })
-            }
-            if (this.comments.length === 0) {
-              ListItem() {
-                Text($r('app.string.community_no_comments'))
-                  .fontSize(UiTokens.fsSecondary)
-                  .fontColor($r('app.color.text_tertiary'))
-                  .width('100%')
-                  .textAlign(TextAlign.Center)
-                  .padding({ top: 24, bottom: 24 })
-              }
-            }
-              ForEach(this.comments, (comment: CommunityComment) => {
-                ListItem() {
-                  this.commentRow(comment, false)
-                }
-              }, (comment: CommunityComment) => comment.id)
-              // 末项 spacer：让开底部互动条（留白必须落在滚动内容里，容器 padding 会裁掉视口）
-              ListItem() {
-                Column().width('100%').height(this.dockInset())
-              }
+                  ListItem() {
+                    this.commentsHeaderRow()
+                  }
+                  this.commentItems()
             }
             .width('100%')
             .height('100%')
@@ -321,6 +357,7 @@ export struct CommunityArticlePage {
 
             .width('100%')
             .height('100%')
+            }
             }
             .tabBar(this.dockBar())
           }
@@ -354,11 +391,23 @@ export struct CommunityArticlePage {
       .padding({ bottom: this.keyboardInset })
       .backgroundColor($r('app.color.page_bg'))
       .alignItems(HorizontalAlign.Start)
+      .onAreaChange(this.onPageArea)
     }
     // 内容也扩到安全区外（布局级，与 expandSafeArea 同设时优先）：二级页四边都扩，
     // 否则下端/左右两侧会露出窗口底色（页面底部输入条一带表现为黑带）
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM],
       [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM, LayoutSafeAreaEdge.START, LayoutSafeAreaEdge.END])
+    // 二级页转场：整页自右水平覆盖进来（退出滑回右侧）——见 services/NavPush.slideCoverTransition。
+    // 系统默认档在分栏下动的是"内容区左边缘 0 → 分栏位"，观感从左侧摊过来（判"方向反了"），
+    // 故改用官方 customTransition（NavDestinationTransitionDelegate）自己定方向。
+    .customTransition((op: NavigationOperation, isEnter: boolean)
+      : Array<NavDestinationTransition> | undefined => slideCoverTransition(op, isEnter,
+        (v: string): void => { this.pageX = v; }))
+    .translate({ x: this.pageX })
+    // 返回键：系统侧滑与标题栏左上角返回按钮都投递到当前 NavDestination 的 onBackPressed
+    //（官方 FAQ faqs-arkui-1117：该回调"支持拦截系统侧滑及 NavDestination 标题栏的返回事件"）；
+    // 没挂它时标题栏返回按钮点了没有反应 —— 这里自己出栈并消费。
+    .onBackPressed((): boolean => popSelfOnBack(this.stack))
     .titleBar({
       style: {
         scrollEffectOpts: {
@@ -608,11 +657,74 @@ export struct CommunityArticlePage {
       .margin({ top: 14 })
     }
     .width('100%')
+    // 官方《页面布局场景》缩进布局：空间充足时内容列限宽居中（两侧留白建立层次）
+    .constraintSize({ maxWidth: CONTENT_MAX })
     .alignItems(HorizontalAlign.Start)
     .padding({
       left: UiTokens.pageHMargin, right: UiTokens.pageHMargin,
       top: UiTokens.topInset, bottom: 6
     })
+  }
+
+  // 正文列（列表项）：宽屏下内容列限宽并水平居中
+  @Builder
+  articleItems() {
+    ListItem() {
+      Row() {
+        this.articleBlock()
+      }
+      .width('100%')
+      .justifyContent(FlexAlign.Center)
+    }
+  }
+
+  // 评论标题行：单列模式下作为列表项随正文一起滚动，分栏模式下固定在评论区顶部
+  @Builder
+  commentsHeaderRow() {
+    Row() {
+      Text($r('app.string.community_all_comments'))
+        .fontSize(UiTokens.fsBody)
+        .fontWeight(FontWeight.Bold)
+        .fontColor($r('app.color.text_primary_strong'))
+      Text(this.detail !== null ? this.detail.article.commentCount.toString() : '0')
+        .fontSize(UiTokens.fsCaption)
+        .fontColor($r('app.color.text_tertiary'))
+        .margin({ left: 6 })
+    }
+    .width('100%')
+    .alignItems(VerticalAlign.Center)
+    .padding({
+      left: UiTokens.pageHMargin, right: UiTokens.pageHMargin, top: 16, bottom: 8
+    })
+  }
+
+  // 评论条目（列表项序列，含空态与末项 spacer）：两种布局共用
+  @Builder
+  commentItems() {
+    if (this.comments.length === 0) {
+      ListItem() {
+        Text($r('app.string.community_no_comments'))
+          .fontSize(UiTokens.fsSecondary)
+          .fontColor($r('app.color.text_tertiary'))
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .padding({ top: 24, bottom: 24 })
+      }
+    }
+    ForEach(this.comments, (comment: CommunityComment) => {
+      ListItem() {
+        this.commentRow(comment, false)
+      }
+    }, (comment: CommunityComment) => comment.id)
+    this.dockSpacerItem()
+  }
+
+  // 末项 spacer：让开底部互动条（留白落在滚动内容里；容器 padding 会裁掉视口）
+  @Builder
+  dockSpacerItem() {
+    ListItem() {
+      Column().width('100%').height(this.dockInset())
+    }
   }
 
   @Builder
@@ -639,12 +751,28 @@ export struct CommunityArticlePage {
         }
         .alignItems(VerticalAlign.Center)
 
-        Text(removeCommunityEmoji(comment.content))
-          .fontSize(UiTokens.fsBody)
-          .fontColor($r('app.color.text_primary_strong'))
-          .lineHeight(22)
-          .width('100%')
-          .margin({ top: 5 })
+        // 评论正文：把其中的 URL 单独渲染成可点的链接（链接色 + 下划线，点击交系统打开）。
+        // 7378 这里是纯文本（removeCommunityEmoji(comment.content)），URL 会以生字符串出现；
+        // 改为按 URL 切段渲染，其余文字与 7378 一致（emoji 仍按社区口径剥掉）。
+        Text() {
+          ForEach(this.linkSpans(removeCommunityEmoji(comment.content)), (seg: LinkSpan) => {
+            if (seg.url) {
+              Span(seg.text)
+                .fontColor(this.accent())
+                .decoration({ type: TextDecorationType.Underline, color: this.accent() })
+                .onClick((): void => {
+                  this.openUrl(seg.text);
+                })
+            } else {
+              Span(seg.text)
+            }
+          }, (seg: LinkSpan, idx: number) => `${idx}:${seg.url ? 'u' : 't'}`)
+        }
+        .fontSize(UiTokens.fsBody)
+        .fontColor($r('app.color.text_primary_strong'))
+        .lineHeight(22)
+        .width('100%')
+        .margin({ top: 5 })
 
         Text(`${formatCommunityDate(comment.createdAt)} · ${comment.likeCount}${this.t($r('app.string.community_likes_unit'))}`)
           .fontSize(UiTokens.fsChip)
@@ -717,39 +845,64 @@ export struct CommunityArticlePage {
         if (this.commentText.trim().length > 0) {
           if (this.submitting) {
             LoadingProgress()
-              .width(20)
-              .height(20)
+              .width(40)
+              .height(40)
               .color(this.accent())
-              .margin({ right: 6 })
           } else {
-            Image($r('app.media.send'))
-              .width(22).height(22)
-              .fillColor(this.accent())
-              .padding(8)
-              .onClick((): void => {
-                this.submitComment();
-              })
+            // 发送 / 点赞 / 分享三键与聊天页附件键同一形态：Button 40×40 透明底 + 内嵌 20vp 图标。
+            // 不能直接给 Image 加 padding —— padding 会缩掉绘制内容（此前 22vp 框 + 8vp padding
+            // 实际只剩约 6vp 的图标，观感即"按钮太小"）。
+            Button() {
+              Image($r('app.media.send'))
+                .width(20)
+                .height(20)
+                .fillColor(this.accent())
+                .draggable(false)
+            }
+            .type(ButtonType.Normal)
+            .width(40)
+            .height(40)
+            .padding(0)
+            .backgroundColor(Color.Transparent)
+            .onClick((): void => {
+              this.submitComment();
+            })
           }
         }
 
-        Image(this.detail !== null && this.detail.article.liked
-          ? $r('app.media.heart_fill') : $r('app.media.heart'))
-          .width(22)
-          .height(22)
-          .fillColor(this.detail !== null && this.detail.article.liked
-            ? this.accent() : $r('app.color.text_tertiary'))
-          .padding(8)
-          .onClick((): void => {
-            this.like();
-          })
+        Button() {
+          Image(this.detail !== null && this.detail.article.liked
+            ? $r('app.media.heart_fill') : $r('app.media.heart'))
+            .width(20)
+            .height(20)
+            .fillColor(this.detail !== null && this.detail.article.liked
+              ? this.accent() : $r('app.color.text_tertiary'))
+            .draggable(false)
+        }
+        .type(ButtonType.Normal)
+        .width(40)
+        .height(40)
+        .padding(0)
+        .backgroundColor(Color.Transparent)
+        .onClick((): void => {
+          this.like();
+        })
 
-        Image($r('app.media.link'))
-          .width(21).height(21)
-          .fillColor($r('app.color.text_tertiary'))
-          .padding(8)
-          .onClick((): void => {
-            this.share();
-          })
+        Button() {
+          Image($r('app.media.link'))
+            .width(20)
+            .height(20)
+            .fillColor($r('app.color.text_tertiary'))
+            .draggable(false)
+        }
+        .type(ButtonType.Normal)
+        .width(40)
+        .height(40)
+        .padding(0)
+        .backgroundColor(Color.Transparent)
+        .onClick((): void => {
+          this.share();
+        })
       }
       .width('100%')
       .padding({ left: 3, right: 3 })
@@ -765,5 +918,56 @@ export struct CommunityArticlePage {
   // 列表末端让位高度：悬浮条带 + 离底间距 + 系统导航区 + 一点呼吸（spacer 落在滚动内容里）
   private dockInset(): number {
     return DOCK_BAR_H + DOCK_BOTTOM_MARGIN + this.navInset + 8;
+  }
+
+  // 把一段纯文本按 http(s):// 切成「文字 / 链接」段序列（供 Span 渲染成可点链接）。
+  // 7378 正文与评论都是纯文本（生 URL 就是一串字符）；这里只把 URL 那一段单独上色 + 可点，
+  // 其余文字原样。链接终点取到空白为止，尾部标点（)。,;）归回文字，避免吞进链接。
+  private linkSpans(text: string): LinkSpan[] {
+    const out: LinkSpan[] = [];
+    let i: number = 0;
+    while (i < text.length) {
+      const at: number = text.indexOf('http', i);
+      if (at < 0) {
+        out.push({ text: text.substring(i), url: false });
+        break;
+      }
+      const head: string = text.substring(at, at + 8).toLowerCase();
+      if (!head.startsWith('http://') && !head.startsWith('https://')) {
+        out.push({ text: text.substring(i, at + 4), url: false });
+        i = at + 4;
+        continue;
+      }
+      if (at > i) {
+        out.push({ text: text.substring(i, at), url: false });
+      }
+      let end: number = at;
+      while (end < text.length && ' \n\t'.indexOf(text.charAt(end)) < 0) {
+        end++;
+      }
+      while (end > at && '),.;、，。）]'.indexOf(text.charAt(end - 1)) >= 0) {
+        end--;
+      }
+      out.push({ text: text.substring(at, end), url: true });
+      i = end;
+    }
+    if (out.length === 0) {
+      out.push({ text: text, url: false });
+    }
+    return out;
+  }
+
+  // 链接交系统打开（应用内不内嵌浏览器；与「非文本文件交系统预览」同一取向）
+  private openUrl(url: string): void {
+    try {
+      const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+      ctx.openLink(url, {}, (err: BusinessError): void => {
+        if (err) {
+          this.error = this.t($r('app.string.community_open_link_failed'));
+        }
+      });
+    } catch (e) {
+      this.error = this.t($r('app.string.community_open_link_failed'));
+    }
   }
 }

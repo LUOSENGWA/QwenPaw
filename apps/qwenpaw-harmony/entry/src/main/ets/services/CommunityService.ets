@@ -122,9 +122,13 @@ export function formatCommunityDate(value: string): string {
   return tf($r('app.string.date_month_day'), d.getMonth() + 1, d.getDate());
 }
 
-// 去表情 + 折叠空白（对齐 7378 removeCommunityEmoji / normalizeCommunityText）
+// 去表情 + 折叠空白（对齐 7378 removeCommunityEmoji / normalizeCommunityText）。
+// 除 Unicode 表情码点外，还要去掉正文里以 `[emoji:<url>]` 形式出现的表情占位：Platform 侧的正文
+// 会把表情节点写成这种占位（其 url 指向图片资源），直接显示会露出一串图片地址——
+// 本函数据"去表情"的口径把它们一并去掉（真机实测：帖子正文与评论里都会出现该占位）。
 export function removeCommunityEmoji(value: string): string {
   return value
+    .replace(/\[emoji:[^\]]*\]/g, '')
     .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
     .trim();
 }

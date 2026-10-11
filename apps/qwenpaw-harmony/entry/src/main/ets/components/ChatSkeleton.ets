@@ -13,7 +13,6 @@ import { UiTokens } from '../theme/UiTokens';
 
 @Component
 export struct ChatSkeleton {
-  @Prop isDark: boolean = false;
   // 高光横扫位移（-100% → 100% 循环）
   @State sweepX: string = '-100%';
 

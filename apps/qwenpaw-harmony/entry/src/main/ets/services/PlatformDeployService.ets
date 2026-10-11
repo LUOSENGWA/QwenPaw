@@ -10,7 +10,7 @@ import { http } from '@kit.NetworkKit';
 import { Context } from '@kit.AbilityKit';
 import { platformRequest, PlatformRequestError } from './PlatformSession';
 import { objOf, strOf, numOf } from './JsonUtil';
-import { t, tf } from './I18n';
+import { t } from './I18n';
 
 export const DEFAULT_APP_TYPE: string = 'qwenpaw';
 export const DEFAULT_VERSION_TYPE: string = 'stable';

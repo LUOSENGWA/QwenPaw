@@ -9,6 +9,7 @@
  */
 
 import { HdsNavDestination, ScrollEffectType, BlurStrategy, hdsMaterial } from '@kit.UIDesignKit';
+import { areaWidthOf, wideClampW } from '../theme/Breakpoints';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import {
   PlatformDeployment, listPlatformDeployments, createPlatformDeployment, getPlatformDeployment,
@@ -23,7 +24,13 @@ import { IosGroup, IosRow } from '../components/IosList';
 import { ThemeManager, ThemeSnapshot } from '../theme/ThemeManager';
 import { UiTokens } from '../theme/UiTokens';
 import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
-import { LengthMetrics } from '@kit.ArkUI';
+
+import { pushRoute, popSelfOnBack, slideCoverTransition } from '../services/NavPush';
+import { GatewayAccess, ensurePlatformGateway, registerGatewayConnection,
+  resolveGatewayAccess } from '../services/PlatformGateway';
+import { QpConnection, loadConnections, saveConnection, switchConnection, connectionKey } from '../services/ConnectionStore';
+import { verifyConnection } from '../services/ConnectionService';
+import { notifyConnectionStoreChange } from '../services/AppEvents';
 
 const POLL_INTERVAL_MS: number = 10000;
 const LOG_LINES: number = 40;
@@ -48,13 +55,29 @@ export struct PlatformDeployPage {
   @State resetting: boolean = false;
   @State switching: string = '';
   @State pressed: number = -1;
+  // 云端实例「自动安全配对」状态（对齐 7378 pairDeployment）：配对中 / 已配对 / 失败提示
+  @State pairing: boolean = false;
+  @State paired: boolean = false;
+  @State pairError: string = '';
   @State isDark: boolean = false;
   @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
   private stack: NavPathStack | null = null;
+  // 二级页水平覆盖转场的位移（百分比）：由 NavPush.slideCoverTransition 驱动
+  @State pageX: string = '0%';
   private latch: PressLatch = new PressLatch();
   private timer: number = -1;
   private pollCount: number = 0;
   private inFlight: boolean = false;
+  // 每个实例只自动配对一次（7378 pairingRef 同义）：避免轮询每 10s 重试打扰
+  private pairTried: boolean = false;
+
+  // 大屏（平板/电脑）内容列限宽：官方《页面布局场景》缩进布局 —— 空间充足时内容列居中、两侧留白；
+  // 宽度由外层满宽容器 onAreaChange 实时上报（跟随窗口缩放），实现见 theme/Breakpoints
+  @State pageW: number = 0;
+
+  private onPageArea = (_old: Area, now: Area): void => {
+    this.pageW = areaWidthOf(now, this.pageW);
+  };
 
   aboutToAppear(): void {
     const rec: Record<string, Object> = this.params as Record<string, Object>;
@@ -149,6 +172,11 @@ export struct PlatformDeployPage {
     try {
       const next: PlatformDeployment = await getPlatformDeployment(ctx, id);
       this.deployment = next;
+      // 实例跑起来且拿到访问地址 → 自动安全配对一次（7378 deploy.tsx：状态 running 后自动 pairDeployment）
+      if (next.status === 'running' && next.accessUrl.length > 0 && !this.pairTried) {
+        this.pairTried = true;
+        this.pairDeployment(next.accessUrl);
+      }
       if (includeLogs && !isTerminalDeployment(next.status)) {
         try {
           const lines: string[] = await getPlatformDeploymentLogs(ctx, id);
@@ -362,7 +390,7 @@ export struct PlatformDeployPage {
       return;
     }
     const param: PlatformLoginParam = { returnTo: 'deploy', stack: stack };
-    stack.pushPath({ name: 'platform-login', param: param });
+    pushRoute(stack, 'platform-login', param);
   }
 
   private hasDeployment(): boolean {
@@ -395,112 +423,153 @@ export struct PlatformDeployPage {
 
   build() {
     HdsNavDestination() {
-      Scroll() {
-        Column() {
-          if (!this.loggedIn && !this.checking) {
-            this.hero(false)
-            Text($r('app.string.pd_login_required'))
-              .fontSize(UiTokens.fsBody)
-              .fontColor($r('app.color.text_secondary'))
-              .lineHeight(22)
-              .width('100%')
-              .margin({ top: 6 })
-            this.primaryButton(0, $r('app.string.pd_login_action'), false, (): void => {
-              this.openLogin();
-            })
-          } else {
-            this.hero(this.hasDeployment())
-            if (this.checking) {
-              Row({ space: 10 }) {
-                LoadingProgress().width(22).height(22).color(this.accent())
-                Text($r('app.string.pd_checking'))
-                  .fontSize(UiTokens.fsSecondary)
-                  .fontColor($r('app.color.text_secondary'))
-              }
-              .width('100%')
-              .padding(16)
-              .borderRadius(UiTokens.cardRadius)
-              .backgroundColor($r('app.color.card_glass'))
-              .alignItems(VerticalAlign.Center)
+      Row() {
+        Scroll() {
+          Column() {
+            if (!this.loggedIn && !this.checking) {
+              this.hero(false)
+              Text($r('app.string.pd_login_required'))
+                .fontSize(UiTokens.fsBody)
+                .fontColor($r('app.color.text_secondary'))
+                .lineHeight(22)
+                .width('100%')
+                .margin({ top: 6 })
+              this.primaryButton(0, $r('app.string.pd_login_action'), false, (): void => {
+                this.openLogin();
+              })
             } else {
-              this.statusCard()
-              if (this.deployment !== null) {
-                this.infoCard(this.deployment)
-              }
-              if (this.deployment !== null && this.deployment.status === 'running' &&
-                !deploymentCompatibility(this.deployment.versionType).compatible) {
-                this.mirrorCard(deploymentCompatibility(this.deployment.versionType))
-              }
-              if (this.hasDeployment()) {
-                this.logCard()
-              }
-              if (this.error.length > 0) {
-                Text(this.error)
-                  .fontSize(UiTokens.fsSecondary)
-                  .fontColor($r('app.color.status_error'))
-                  .width('100%')
-                  .lineHeight(19)
-                  .margin({ top: 12 })
-              } else if (this.deploymentFailure().length > 0) {
-                Text(this.deploymentFailure())
-                  .fontSize(UiTokens.fsSecondary)
-                  .fontColor($r('app.color.status_error'))
-                  .width('100%')
-                  .lineHeight(19)
-                  .margin({ top: 12 })
-              }
-              if (!this.hasDeployment() && !this.rateLimited) {
-                this.primaryButton(1, $r('app.string.pd_deploy_now'), this.creating, (): void => {
-                  this.createDeployment();
-                })
-              }
-              if (this.hasDeployment()) {
-                this.primaryButton(2, $r('app.string.pd_reset_pair'), this.resetting, (): void => {
-                  this.confirmResetPair();
-                })
-              }
-              if (this.hasDeployment()) {
-                this.primaryButton(3, $r('app.string.pd_restart'), this.recovering, (): void => {
-                  this.confirmRestart();
-                })
-              }
-              this.ghostButton(4, $r('app.string.pd_recheck'), (): void => {
-                if (this.hasDeployment()) {
-                  this.refresh(true);
-                } else {
-                  this.check();
+              this.hero(this.hasDeployment())
+              if (this.checking) {
+                Row({ space: 10 }) {
+                  LoadingProgress().width(22).height(22).color(this.accent())
+                  Text($r('app.string.pd_checking'))
+                    .fontSize(UiTokens.fsSecondary)
+                    .fontColor($r('app.color.text_secondary'))
                 }
+                .width('100%')
+                .padding(16)
+                .borderRadius(UiTokens.cardRadius)
+                .backgroundColor($r('app.color.card_glass'))
+                .alignItems(VerticalAlign.Center)
+              } else {
+                this.statusCard()
+                if (this.deployment !== null) {
+                  this.infoCard(this.deployment)
+                }
+                if (this.deployment !== null && this.deployment.status === 'running' &&
+                  !deploymentCompatibility(this.deployment.versionType).compatible) {
+                  this.mirrorCard(deploymentCompatibility(this.deployment.versionType))
+                }
+                if (this.hasDeployment()) {
+                  this.logCard()
+                }
+                if (this.error.length > 0) {
+                  Text(this.error)
+                    .fontSize(UiTokens.fsSecondary)
+                    .fontColor($r('app.color.status_error'))
+                    .width('100%')
+                    .lineHeight(19)
+                    .margin({ top: 12 })
+                } else if (this.deploymentFailure().length > 0) {
+                  Text(this.deploymentFailure())
+                    .fontSize(UiTokens.fsSecondary)
+                    .fontColor($r('app.color.status_error'))
+                    .width('100%')
+                    .lineHeight(19)
+                    .margin({ top: 12 })
+                }
+                if (!this.hasDeployment() && !this.rateLimited) {
+                  this.primaryButton(1, $r('app.string.pd_deploy_now'), this.creating, (): void => {
+                    this.createDeployment();
+                  })
+                }
+                if (this.deployment !== null && this.deployment.status === 'running'
+                  && this.deployment.accessUrl.length > 0 && !this.paired) {
+                  // 自动配对失败或没赶上时的手动入口（7378 同页也留手动配对）
+                  this.primaryButton(9, this.pairing ? $r('app.string.pd_pairing')
+                    : $r('app.string.pd_pair_now'), this.pairing, (): void => {
+                    const url: string = this.deployment !== null ? this.deployment.accessUrl : '';
+                    this.pairDeployment(url);
+                  })
+                }
+                if (this.paired) {
+                  Text($r('app.string.pd_paired'))
+                    .fontSize(UiTokens.fsSecondary)
+                    .fontColor($r('app.color.text_secondary'))
+                    .width('100%')
+                    .margin({ top: 8 })
+                }
+                if (this.pairError.length > 0) {
+                  Text(this.pairError)
+                    .fontSize(UiTokens.fsSecondary)
+                    .fontColor($r('app.color.status_error'))
+                    .width('100%')
+                    .lineHeight(19)
+                    .margin({ top: 8 })
+                }
+                if (this.hasDeployment()) {
+                  this.primaryButton(2, $r('app.string.pd_reset_pair'), this.resetting, (): void => {
+                    this.confirmResetPair();
+                  })
+                }
+                if (this.hasDeployment()) {
+                  this.primaryButton(3, $r('app.string.pd_restart'), this.recovering, (): void => {
+                    this.confirmRestart();
+                  })
+                }
+                this.ghostButton(4, $r('app.string.pd_recheck'), (): void => {
+                  if (this.hasDeployment()) {
+                    this.refresh(true);
+                  } else {
+                    this.check();
+                  }
+                })
+                this.ghostButton(5, $r('app.string.pd_open_console'), (): void => {
+                  this.openConsole();
+                })
+              }
+              this.ghostButton(6, $r('app.string.pd_switch_account'), (): void => {
+                this.switchAccount();
               })
-              this.ghostButton(5, $r('app.string.pd_open_console'), (): void => {
-                this.openConsole();
-              })
+              Text($r('app.string.pd_footer'))
+                .fontSize(UiTokens.fsChip)
+                .fontColor($r('app.color.text_tertiary'))
+                .lineHeight(17)
+                .width('100%')
+                .margin({ top: 14, bottom: 24 })
             }
-            this.ghostButton(6, $r('app.string.pd_switch_account'), (): void => {
-              this.switchAccount();
-            })
-            Text($r('app.string.pd_footer'))
-              .fontSize(UiTokens.fsChip)
-              .fontColor($r('app.color.text_tertiary'))
-              .lineHeight(17)
-              .width('100%')
-              .margin({ top: 14, bottom: 24 })
           }
+          .width('100%')
+          .alignItems(HorizontalAlign.Start)
+          .padding({
+            top: UiTokens.topInset, left: UiTokens.pageHMargin, right: UiTokens.pageHMargin
+          })
         }
-        .width('100%')
-        .alignItems(HorizontalAlign.Start)
-        .padding({
-          top: UiTokens.topInset, left: UiTokens.pageHMargin, right: UiTokens.pageHMargin
-        })
+        .width(wideClampW(this.pageW))
+        .height('100%')
+        .scrollBar(BarState.Off)
+        .align(Alignment.Top)
       }
       .width('100%')
       .height('100%')
-      .scrollBar(BarState.Off)
-      .align(Alignment.Top)
+      .justifyContent(FlexAlign.Center)
+      .onAreaChange(this.onPageArea)
     }
     // 内容也扩到安全区外（布局级，与 expandSafeArea 同设时优先）：二级页四边都扩，
     // 否则下端/左右两侧会露出窗口底色（页面底部输入条一带表现为黑带）
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM],
       [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM, LayoutSafeAreaEdge.START, LayoutSafeAreaEdge.END])
+    // 二级页转场：整页自右水平覆盖进来（退出滑回右侧）——见 services/NavPush.slideCoverTransition。
+    // 系统默认档在分栏下动的是"内容区左边缘 0 → 分栏位"，观感从左侧摊过来（判"方向反了"），
+    // 故改用官方 customTransition（NavDestinationTransitionDelegate）自己定方向。
+    .customTransition((op: NavigationOperation, isEnter: boolean)
+      : Array<NavDestinationTransition> | undefined => slideCoverTransition(op, isEnter,
+        (v: string): void => { this.pageX = v; }))
+    .translate({ x: this.pageX })
+    // 返回键：系统侧滑与标题栏左上角返回按钮都投递到当前 NavDestination 的 onBackPressed
+    //（官方 FAQ faqs-arkui-1117：该回调"支持拦截系统侧滑及 NavDestination 标题栏的返回事件"）；
+    // 没挂它时标题栏返回按钮点了没有反应 —— 这里自己出栈并消费。
+    .onBackPressed((): boolean => popSelfOnBack(this.stack))
     .titleBar({
       style: {
         scrollEffectOpts: {
@@ -576,6 +645,62 @@ export struct PlatformDeployPage {
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
+  }
+
+  /*
+   * 自动安全配对（对齐 7378 deploy.tsx::pairDeployment）：
+   *   ① 用 Platform 登录态解析实例入口（/api/v1/qwenpaw/{appId} → 实例地址 + accessPath）；
+   *   ② 已有同源连接就复用（只刷新 accessPath），否则建一条 source='platform' 的连接
+   *      —— 7378 这里是"空凭据登录"：云端实例对 Platform 放行的调用方不再要账号密码；
+   *   ③ 先做一次网关换放行（把会话 cookie 建起来），再 verifyConnection 真发一次请求校验；
+   *   ④ 存盘 + 设为当前连接 + 广播（列表/根页据此刷新），并切到会话页。
+   * 失败只提示，不改动既有连接（半做会留下"假配对态"）。
+   */
+  private async pairDeployment(accessUrl: string): Promise<void> {
+    if (this.pairing) {
+      return;
+    }
+    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
+    this.pairing = true;
+    this.pairError = '';
+    try {
+      const access: GatewayAccess = await resolveGatewayAccess(ctx, accessUrl);
+      const list: QpConnection[] = await loadConnections(ctx);
+      let found: QpConnection | null = null;
+      for (const c of list) {
+        if (c.baseUrl.toLowerCase() === access.baseUrl.toLowerCase()) {
+          found = c;
+          break;
+        }
+      }
+      let conn: QpConnection;
+      if (found !== null) {
+        conn = {
+          baseUrl: found.baseUrl, token: found.token, username: found.username,
+          agentId: found.agentId, source: 'platform', serverMode: found.serverMode,
+          platformAccessPath: access.accessPath
+        };
+      } else {
+        conn = {
+          baseUrl: access.baseUrl, token: '', username: '', agentId: 'default',
+          source: 'platform', serverMode: '', platformAccessPath: access.accessPath
+        };
+      }
+      await ensurePlatformGateway(ctx, access.baseUrl, access.accessPath);
+      await verifyConnection(conn);
+      await saveConnection(ctx, conn);
+      await switchConnection(ctx, connectionKey(conn));
+      registerGatewayConnection(conn.baseUrl, conn.platformAccessPath);
+      // 连接变更广播由 ConnectionStore 统一发出；这里补发「存储被改写」让会话页重取并复核
+      notifyConnectionStoreChange();
+      this.paired = true;
+      this.pairError = '';
+    } catch (e) {
+      this.paired = false;
+      this.pairError = e instanceof Error ? e.message : this.t($r('app.string.pd_pair_failed'));
+    } finally {
+      this.pairing = false;
+    }
   }
 
   // 状态卡：状态标签 + 说明 + 三步进度（创建实例 → 启动服务 → 安全配对）

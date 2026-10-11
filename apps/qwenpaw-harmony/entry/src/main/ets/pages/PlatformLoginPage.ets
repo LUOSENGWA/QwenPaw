@@ -8,17 +8,19 @@
  */
 
 import { HdsNavDestination, ScrollEffectType, BlurStrategy, hdsMaterial } from '@kit.UIDesignKit';
+import { areaWidthOf, wideClampW } from '../theme/Breakpoints';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import {
   platformLogin, registerPlatform, sendPlatformVerificationCode, PlatformSession,
   loadPlatformSession
 } from '../services/PlatformSession';
-import { PlatformLoginParam, CommunityComposeParam } from '../components/CommunityTab';
+import { CommunityComposeParam } from '../components/CommunityTab';
 import { SegmentedControl } from '../components/SegmentedControl';
 import { ThemeManager, ThemeSnapshot } from '../theme/ThemeManager';
 import { UiTokens } from '../theme/UiTokens';
-import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
-import { LengthMetrics, uiMaterial } from '@kit.ArkUI';
+
+import { uiMaterial } from '@kit.ArkUI';
+import { pushRoute, popSelfOnBack, slideCoverTransition } from '../services/NavPush';
 
 const CODE_COUNTDOWN: number = 60;
 // 登录/注册连排按钮几何（与首页社区工具条同结构、按本页 44vp 高度给内边距）
@@ -42,7 +44,6 @@ export struct PlatformLoginPage {
   @State oauthBusy: boolean = false;
   @State codeBusy: boolean = false;
   @State error: string = '';
-  @State pressed: number = -1;
   @State isDark: boolean = false;
   @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
   // 沉浸材质（内容区要让材质真生效只有 Toggle(ToggleType.Button) 外壳这条路）：
@@ -55,8 +56,17 @@ export struct PlatformLoginPage {
   private accentMaterial: SystemUiMaterial = this.glassMaterial;
   private returnTo: string = '';
   private stack: NavPathStack | null = null;
-  private latch: PressLatch = new PressLatch();
+  // 二级页水平覆盖转场的位移（百分比）：由 NavPush.slideCoverTransition 驱动
+  @State pageX: string = '0%';
   private timer: number = -1;
+
+  // 大屏（平板/电脑）内容列限宽：官方《页面布局场景》缩进布局 —— 空间充足时内容列居中、两侧留白；
+  // 宽度由外层满宽容器 onAreaChange 实时上报（跟随窗口缩放），实现见 theme/Breakpoints
+  @State pageW: number = 0;
+
+  private onPageArea = (_old: Area, now: Area): void => {
+    this.pageW = areaWidthOf(now, this.pageW);
+  };
 
   aboutToAppear(): void {
     const rec: Record<string, Object> = this.params as Record<string, Object>;
@@ -206,7 +216,7 @@ export struct PlatformLoginPage {
     this.error = '';
     this.oauthBusy = true;
     const param: Record<string, Object> = { 'stack': stack };
-    stack.pushPath({ name: 'platform-oauth', param: param });
+    pushRoute(stack, 'platform-oauth', param);
   }
 
   // 从授权页返回：已建立会话则按登录成功继续（与账号密码路径同一个收尾），否则只解除忙碌态
@@ -245,142 +255,122 @@ export struct PlatformLoginPage {
 
   build() {
     HdsNavDestination() {
-      Scroll() {
-        Column() {
+      Row() {
+        Scroll() {
           Column() {
-            // 图标 = 7378 community/login.tsx 同一枚 lucide LogIn（白色画在主色块上）
-            Image($r('app.media.log_in'))
-              .width(28)
-              .height(28)
-              .fillColor(Color.White)
-          }
-          .width(58)
-          .height(58)
-          .borderRadius(18)
-          .backgroundColor(this.accent())
-          .justifyContent(FlexAlign.Center)
-
-          Text($r('app.string.platform_login_heading'))
-            .fontSize(27)
-            .fontWeight(FontWeight.Bold)
-            .fontColor($r('app.color.text_primary_strong'))
-            .margin({ top: 18 })
-          Text($r('app.string.platform_login_copy'))
-            .fontSize(UiTokens.fsBody)
-            .fontColor($r('app.color.text_secondary'))
-            .lineHeight(22)
-            .margin({ top: 8 })
-
-          // 登录 / 注册：连排按钮（共用组件 components/SegmentedControl.ets —— 一个框 + 跟手滑块 +
-          // 沉浸材质 + 点击/拖动两入口）；切换带补间，注册专属字段随之进场
-          Row() {
-            SegmentedControl({
-              labels: [$r('app.string.platform_login_segment_login'),
-                $r('app.string.platform_login_segment_register')],
-              selectedIndex: this.mode === 'register' ? 1 : 0,
-              segHeight: SEG_H,
-              material: this.glassMaterial,
-              onChange: (index: number): void => {
-                this.switchMode(index === 1 ? 'register' : 'login');
-              }
-            })
-          }
-          .width('100%')
-          .margin({ top: 22 })
-
-          Text($r('app.string.platform_login_account'))
-            .fontSize(UiTokens.fsCaption)
-            .fontColor($r('app.color.text_tertiary'))
-            .width('100%')
-            .margin({ top: 18, bottom: 6 })
-          TextInput({
-            placeholder: this.mode === 'register'
-              ? $r('app.string.platform_login_account_hint_register')
-              : $r('app.string.platform_login_account_hint'),
-            text: $$this.account
-          })
-            .fontSize(UiTokens.fsBody)
-            .caretColor(this.accent())
-            .backgroundColor($r('app.color.card_bg'))
-            .fontColor($r('app.color.input_text'))
-            .placeholderColor($r('app.color.placeholder'))
-            .placeholderFont({ size: UiTokens.fsBody })
-            .height(46)
-            .borderRadius(12)
-            .padding({ left: 12, right: 12 })
-
-          if (this.mode === 'register') {
-            // 注册专属字段：随模式切换补间进场（配合 SegmentedControl 的补间，避免硬切）
             Column() {
-              Text($r('app.string.platform_login_code'))
-                .fontSize(UiTokens.fsCaption)
-                .fontColor($r('app.color.text_tertiary'))
-                .width('100%')
-                .margin({ top: 14, bottom: 6 })
-              Row({ space: 8 }) {
-                TextInput({
-                  placeholder: $r('app.string.platform_login_code_placeholder'),
-                  text: $$this.verifyCode
-                })
-                  .fontSize(UiTokens.fsBody)
-                  .caretColor(this.accent())
-                  .backgroundColor($r('app.color.card_bg'))
-                  .fontColor($r('app.color.input_text'))
-                  .placeholderColor($r('app.color.placeholder'))
-                  .placeholderFont({ size: UiTokens.fsBody })
-                  .height(46)
-                  .borderRadius(12)
-                  .padding({ left: 12, right: 12 })
-                  .layoutWeight(1)
-                Text(this.countdown > 0
-                  ? `${this.countdown}s` : $r('app.string.platform_login_send_code'))
-                  .fontSize(UiTokens.fsSecondary)
-                  .fontColor(this.countdown > 0
-                    ? $r('app.color.text_tertiary') : this.accent())
-                  .textAlign(TextAlign.Center)
-                  .height(46)
-                  .padding({ left: 14, right: 14 })
-                  .borderRadius(12)
-                  .backgroundColor($r('app.color.card_bg'))
-                  .onClick((): void => {
-                    this.sendCode();
-                  })
-              }
-              .width('100%')
+              // 图标 = 7378 community/login.tsx 同一枚 lucide LogIn（白色画在主色块上）
+              Image($r('app.media.log_in'))
+                .width(28)
+                .height(28)
+                .fillColor(Color.White)
+            }
+            .width(58)
+            .height(58)
+            .borderRadius(18)
+            .backgroundColor(this.accent())
+            .justifyContent(FlexAlign.Center)
+
+            Text($r('app.string.platform_login_heading'))
+              .fontSize(27)
+              .fontWeight(FontWeight.Bold)
+              .fontColor($r('app.color.text_primary_strong'))
+              .margin({ top: 18 })
+            Text($r('app.string.platform_login_copy'))
+              .fontSize(UiTokens.fsBody)
+              .fontColor($r('app.color.text_secondary'))
+              .lineHeight(22)
+              .margin({ top: 8 })
+
+            // 登录 / 注册：连排按钮（共用组件 components/SegmentedControl.ets —— 一个框 + 跟手滑块 +
+            // 沉浸材质 + 点击/拖动两入口）；切换带补间，注册专属字段随之进场
+            Row() {
+              SegmentedControl({
+                labels: [$r('app.string.platform_login_segment_login'),
+                  $r('app.string.platform_login_segment_register')],
+                selectedIndex: this.mode === 'register' ? 1 : 0,
+                segHeight: SEG_H,
+                material: this.glassMaterial,
+                onChange: (index: number): void => {
+                  this.switchMode(index === 1 ? 'register' : 'login');
+                }
+              })
             }
             .width('100%')
-            .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: -8 })))
-          }
+            .margin({ top: 22 })
 
-          Text($r('app.string.platform_login_password'))
-            .fontSize(UiTokens.fsCaption)
-            .fontColor($r('app.color.text_tertiary'))
-            .width('100%')
-            .margin({ top: 14, bottom: 6 })
-          TextInput({
-            placeholder: $r('app.string.platform_login_password_hint'),
-            text: $$this.password
-          })
-            .type(InputType.Password)
-            .fontSize(UiTokens.fsBody)
-            .caretColor(this.accent())
-            .backgroundColor($r('app.color.card_bg'))
-            .fontColor($r('app.color.input_text'))
-            .placeholderColor($r('app.color.placeholder'))
-            .placeholderFont({ size: UiTokens.fsBody })
-            .height(46)
-            .borderRadius(12)
-            .padding({ left: 12, right: 12 })
+            Text($r('app.string.platform_login_account'))
+              .fontSize(UiTokens.fsCaption)
+              .fontColor($r('app.color.text_tertiary'))
+              .width('100%')
+              .margin({ top: 18, bottom: 6 })
+            TextInput({
+              placeholder: this.mode === 'register'
+                ? $r('app.string.platform_login_account_hint_register')
+                : $r('app.string.platform_login_account_hint'),
+              text: $$this.account
+            })
+              .fontSize(UiTokens.fsBody)
+              .caretColor(this.accent())
+              .backgroundColor($r('app.color.card_bg'))
+              .fontColor($r('app.color.input_text'))
+              .placeholderColor($r('app.color.placeholder'))
+              .placeholderFont({ size: UiTokens.fsBody })
+              .height(46)
+              .borderRadius(12)
+              .padding({ left: 12, right: 12 })
 
-          if (this.mode === 'register') {
-            Text($r('app.string.platform_login_confirm_password'))
+            if (this.mode === 'register') {
+              // 注册专属字段：随模式切换补间进场（配合 SegmentedControl 的补间，避免硬切）
+              Column() {
+                Text($r('app.string.platform_login_code'))
+                  .fontSize(UiTokens.fsCaption)
+                  .fontColor($r('app.color.text_tertiary'))
+                  .width('100%')
+                  .margin({ top: 14, bottom: 6 })
+                Row({ space: 8 }) {
+                  TextInput({
+                    placeholder: $r('app.string.platform_login_code_placeholder'),
+                    text: $$this.verifyCode
+                  })
+                    .fontSize(UiTokens.fsBody)
+                    .caretColor(this.accent())
+                    .backgroundColor($r('app.color.card_bg'))
+                    .fontColor($r('app.color.input_text'))
+                    .placeholderColor($r('app.color.placeholder'))
+                    .placeholderFont({ size: UiTokens.fsBody })
+                    .height(46)
+                    .borderRadius(12)
+                    .padding({ left: 12, right: 12 })
+                    .layoutWeight(1)
+                  Text(this.countdown > 0
+                    ? `${this.countdown}s` : $r('app.string.platform_login_send_code'))
+                    .fontSize(UiTokens.fsSecondary)
+                    .fontColor(this.countdown > 0
+                      ? $r('app.color.text_tertiary') : this.accent())
+                    .textAlign(TextAlign.Center)
+                    .height(46)
+                    .padding({ left: 14, right: 14 })
+                    .borderRadius(12)
+                    .backgroundColor($r('app.color.card_bg'))
+                    .onClick((): void => {
+                      this.sendCode();
+                    })
+                }
+                .width('100%')
+              }
+              .width('100%')
+              .transition(TransitionEffect.OPACITY.combine(TransitionEffect.translate({ y: -8 })))
+            }
+
+            Text($r('app.string.platform_login_password'))
               .fontSize(UiTokens.fsCaption)
               .fontColor($r('app.color.text_tertiary'))
               .width('100%')
               .margin({ top: 14, bottom: 6 })
             TextInput({
-              placeholder: $r('app.string.platform_login_confirm_hint'),
-              text: $$this.confirmPassword
+              placeholder: $r('app.string.platform_login_password_hint'),
+              text: $$this.password
             })
               .type(InputType.Password)
               .fontSize(UiTokens.fsBody)
@@ -392,117 +382,154 @@ export struct PlatformLoginPage {
               .height(46)
               .borderRadius(12)
               .padding({ left: 12, right: 12 })
-          }
 
-          if (this.error.length > 0) {
-            Text(this.error)
-              .fontSize(UiTokens.fsSecondary)
-              .fontColor($r('app.color.status_error'))
-              .width('100%')
-              .lineHeight(19)
-              .margin({ top: 12 })
-          }
+            if (this.mode === 'register') {
+              Text($r('app.string.platform_login_confirm_password'))
+                .fontSize(UiTokens.fsCaption)
+                .fontColor($r('app.color.text_tertiary'))
+                .width('100%')
+                .margin({ top: 14, bottom: 6 })
+              TextInput({
+                placeholder: $r('app.string.platform_login_confirm_hint'),
+                text: $$this.confirmPassword
+              })
+                .type(InputType.Password)
+                .fontSize(UiTokens.fsBody)
+                .caretColor(this.accent())
+                .backgroundColor($r('app.color.card_bg'))
+                .fontColor($r('app.color.input_text'))
+                .placeholderColor($r('app.color.placeholder'))
+                .placeholderFont({ size: UiTokens.fsBody })
+                .height(46)
+                .borderRadius(12)
+                .padding({ left: 12, right: 12 })
+            }
 
-          // 主行动（提交）：Toggle(ToggleType.Button) 外壳承载「主题色沉浸材质」——内容区只有
-          // Toggle 外壳能让材质真生效（官方豁免名单），材质自带交互形变 + 点光源反馈，无需自绘
-          Toggle({ type: ToggleType.Button, isOn: false }) {
-            Text(this.busy
-              ? $r('app.string.platform_login_submitting')
-              : (this.mode === 'register'
-                ? $r('app.string.platform_login_submit_register')
-                : $r('app.string.platform_login_submit')))
-              .fontSize(UiTokens.fsBody)
-              .fontWeight(FontWeight.Medium)
-              .fontColor(Color.White)
-              .textAlign(TextAlign.Center)
-              .width('100%')
-              .height(48)
-          }
-          .width('100%')
-          .height(48)
-          .borderRadius(24)
-          .backgroundColor(Color.Transparent)
-          .systemMaterial(this.accentMaterial)
-          .selectedColor(Color.Transparent)
-          .enabled(!this.busy)
-          .opacity(this.busy ? 0.6 : 1)
-          .margin({ top: 18 })
-          .onChange((isOn: boolean): void => {
-            this.submit();
-          })
+            if (this.error.length > 0) {
+              Text(this.error)
+                .fontSize(UiTokens.fsSecondary)
+                .fontColor($r('app.color.status_error'))
+                .width('100%')
+                .lineHeight(19)
+                .margin({ top: 12 })
+            }
 
-          // GitHub 授权登录（内嵌 ArkWeb 授权页）：与账号密码并列的第二条登录路径。
-          // 图标 = 7378 同一枚 lucide GitBranch（lucide 官方几何落在 resources/base/media/git_branch.svg，
-          // 按主题色 fillColor 上色；不用系统符号里语义相近的替代件）。
-          Toggle({ type: ToggleType.Button, isOn: false }) {
-            Row({ space: 9 }) {
-              Image($r('app.media.git_branch'))
-                .width(20)
-                .height(20)
-                .fillColor($r('app.color.text_primary_strong'))
-              Text($r('app.string.platform_login_github'))
+            // 主行动（提交）：Toggle(ToggleType.Button) 外壳承载「主题色沉浸材质」——内容区只有
+            // Toggle 外壳能让材质真生效（官方豁免名单），材质自带交互形变 + 点光源反馈，无需自绘
+            Toggle({ type: ToggleType.Button, isOn: false }) {
+              Text(this.busy
+                ? $r('app.string.platform_login_submitting')
+                : (this.mode === 'register'
+                  ? $r('app.string.platform_login_submit_register')
+                  : $r('app.string.platform_login_submit')))
                 .fontSize(UiTokens.fsBody)
                 .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.text_primary_strong'))
+                .fontColor(Color.White)
+                .textAlign(TextAlign.Center)
+                .width('100%')
+                .height(48)
+            }
+            .width('100%')
+            .height(48)
+            .borderRadius(24)
+            .backgroundColor(Color.Transparent)
+            .systemMaterial(this.accentMaterial)
+            .selectedColor(Color.Transparent)
+            .enabled(!this.busy)
+            .opacity(this.busy ? 0.6 : 1)
+            .margin({ top: 18 })
+            .onChange((isOn: boolean): void => {
+              this.submit();
+            })
+
+            // GitHub 授权登录（内嵌 ArkWeb 授权页）：与账号密码并列的第二条登录路径。
+            // 图标 = 7378 同一枚 lucide GitBranch（lucide 官方几何落在 resources/base/media/git_branch.svg，
+            // 按主题色 fillColor 上色；不用系统符号里语义相近的替代件）。
+            Toggle({ type: ToggleType.Button, isOn: false }) {
+              Row({ space: 9 }) {
+                Image($r('app.media.git_branch'))
+                  .width(20)
+                  .height(20)
+                  .fillColor($r('app.color.text_primary_strong'))
+                Text($r('app.string.platform_login_github'))
+                  .fontSize(UiTokens.fsBody)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor($r('app.color.text_primary_strong'))
+              }
+              .width('100%')
+              .height(50)
+              .justifyContent(FlexAlign.Center)
             }
             .width('100%')
             .height(50)
-            .justifyContent(FlexAlign.Center)
-          }
-          .width('100%')
-          .height(50)
-          .borderRadius(14)
-          .backgroundColor(Color.Transparent)
-          .systemMaterial(this.glassMaterial)
-          .selectedColor(Color.Transparent)
-          .enabled(!(this.oauthBusy || this.busy))
-          .opacity(this.oauthBusy || this.busy ? 0.6 : 1)
-          .margin({ top: 12 })
-          .onChange((isOn: boolean): void => {
-            this.openGitHub();
-          })
+            .borderRadius(14)
+            .backgroundColor(Color.Transparent)
+            .systemMaterial(this.glassMaterial)
+            .selectedColor(Color.Transparent)
+            .enabled(!(this.oauthBusy || this.busy))
+            .opacity(this.oauthBusy || this.busy ? 0.6 : 1)
+            .margin({ top: 12 })
+            .onChange((isOn: boolean): void => {
+              this.openGitHub();
+            })
 
-          Text($r('app.string.platform_login_github_hint'))
-            .fontSize(UiTokens.fsChip)
-            .fontColor($r('app.color.text_tertiary'))
-            .textAlign(TextAlign.Center)
-            .width('100%')
-            .margin({ top: 8 })
-
-          Row({ space: 9 }) {
-            // 图标 = 7378 同一枚 lucide ShieldCheck
-            Image($r('app.media.shield_check'))
-              .width(17)
-              .height(17)
-              .fillColor(this.accent())
-            Text($r('app.string.platform_login_security_note'))
+            Text($r('app.string.platform_login_github_hint'))
               .fontSize(UiTokens.fsChip)
               .fontColor($r('app.color.text_tertiary'))
-              .lineHeight(17)
-              .layoutWeight(1)
+              .textAlign(TextAlign.Center)
+              .width('100%')
+              .margin({ top: 8 })
+
+            Row({ space: 9 }) {
+              // 图标 = 7378 同一枚 lucide ShieldCheck
+              Image($r('app.media.shield_check'))
+                .width(17)
+                .height(17)
+                .fillColor(this.accent())
+              Text($r('app.string.platform_login_security_note'))
+                .fontSize(UiTokens.fsChip)
+                .fontColor($r('app.color.text_tertiary'))
+                .lineHeight(17)
+                .layoutWeight(1)
+            }
+            .width('100%')
+            .alignItems(VerticalAlign.Top)
+            .padding(13)
+            .borderRadius(12)
+            .backgroundColor($r('app.color.card_bg'))
+            .margin({ top: 18, bottom: 24 })
           }
           .width('100%')
-          .alignItems(VerticalAlign.Top)
-          .padding(13)
-          .borderRadius(12)
-          .backgroundColor($r('app.color.card_bg'))
-          .margin({ top: 18, bottom: 24 })
+          .alignItems(HorizontalAlign.Start)
+          .padding({
+            top: UiTokens.topInset, left: UiTokens.pageHMargin, right: UiTokens.pageHMargin
+          })
         }
-        .width('100%')
-        .alignItems(HorizontalAlign.Start)
-        .padding({
-          top: UiTokens.topInset, left: UiTokens.pageHMargin, right: UiTokens.pageHMargin
-        })
+        .width(wideClampW(this.pageW))
+        .height('100%')
+        .scrollBar(BarState.Off)
+        .align(Alignment.Top)
       }
       .width('100%')
       .height('100%')
-      .scrollBar(BarState.Off)
-      .align(Alignment.Top)
+      .justifyContent(FlexAlign.Center)
+      .onAreaChange(this.onPageArea)
     }
     // 内容也扩到安全区外（布局级，与 expandSafeArea 同设时优先）：二级页四边都扩，
     // 否则下端/左右两侧会露出窗口底色（页面底部输入条一带表现为黑带）
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM],
       [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM, LayoutSafeAreaEdge.START, LayoutSafeAreaEdge.END])
+    // 二级页转场：整页自右水平覆盖进来（退出滑回右侧）——见 services/NavPush.slideCoverTransition。
+    // 系统默认档在分栏下动的是"内容区左边缘 0 → 分栏位"，观感从左侧摊过来（判"方向反了"），
+    // 故改用官方 customTransition（NavDestinationTransitionDelegate）自己定方向。
+    .customTransition((op: NavigationOperation, isEnter: boolean)
+      : Array<NavDestinationTransition> | undefined => slideCoverTransition(op, isEnter,
+        (v: string): void => { this.pageX = v; }))
+    .translate({ x: this.pageX })
+    // 返回键：系统侧滑与标题栏左上角返回按钮都投递到当前 NavDestination 的 onBackPressed
+    //（官方 FAQ faqs-arkui-1117：该回调"支持拦截系统侧滑及 NavDestination 标题栏的返回事件"）；
+    // 没挂它时标题栏返回按钮点了没有反应 —— 这里自己出栈并消费。
+    .onBackPressed((): boolean => popSelfOnBack(this.stack))
     .titleBar({
       style: {
         scrollEffectOpts: {

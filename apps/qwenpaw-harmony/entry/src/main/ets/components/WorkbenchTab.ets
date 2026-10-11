@@ -5,12 +5,15 @@
  */
 
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
+import { swapRoute } from '../services/NavPush';
+import { rememberPage } from '../services/LastPage';
 import { preferences } from '@kit.ArkData';
 import { emitter } from '@kit.BasicServicesKit';
 import { loadConnection, QpConnection } from '../services/ConnectionStore';
 import { hostOf } from '../services/PairingModel';
 import { fetchApprovals, ApprovalInfo } from '../services/ApprovalsService';
 import { AGENT_CHANGE_EVENT } from '../services/AgentsService';
+import { CONN_CHANGE_EVENT } from '../services/AppEvents';
 import { publishNotice, requestNotificationPermission } from '../services/NotifyService';
 import {
   WorkbenchCategory, WorkbenchModule, WORKBENCH_CATEGORIES, WORKBENCH_MODULES
@@ -19,19 +22,12 @@ import { UiTokens } from '../theme/UiTokens';
 import { ThemeManager, ThemeSnapshot } from '../theme/ThemeManager';
 import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
 import { GlassCard } from './GlassCard';
-import { requestSettings } from '../services/AppEvents';
-
-export const CONN_CHANGE_EVENT: string = 'qp_conn_change';
-// 「连接存储被别处改写」事件：设置页切换/移除/断开/重连后发一条，会话页据此重取当前连接并复核。
-// 与 CONN_CHANGE_EVENT 分开，避免会话页自发自收（它自己发 CONN_CHANGE_EVENT）造成重连死循环。
-export const CONN_STORE_EVENT: string = 'qp_conn_store_change';
 
 @Component
 export struct WorkbenchTab {
   navStack: NavPathStack = new NavPathStack();
   @State connHost: string = '';
   @State connected: boolean = false;
-  @State approvals: ApprovalInfo[] = [];
   // 搜索词由标题栏工具条（SearchPill）持有并单向同步进来（变更即过滤）
   @Prop query: string = '';
   @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
@@ -89,15 +85,14 @@ export struct WorkbenchTab {
       } else {
         this.connected = false;
         this.connHost = '';
-        this.approvals = [];
       }
     });
   }
 
+  // 审批：只用于「待审批数量变化时发系统通知」（列表不在此页呈现，故不落任何状态）
   private async refreshApprovals(conn: QpConnection, ctx: common.UIAbilityContext): Promise<void> {
     try {
       const list: ApprovalInfo[] = await fetchApprovals(conn.baseUrl, conn.token, conn.agentId);
-      this.approvals = list;
       await this.notifyIfNew(ctx, list.length);
     } catch (e) {
       // 审批读取失败不打断页面
@@ -142,7 +137,9 @@ export struct WorkbenchTab {
 
   private openModule(key: string): void {
     const param: Record<string, string> = { 'key': key };
-    this.navStack.pushPath({ name: 'module', param: param });
+    // 记下「最后打开的模块」：分栏下切走页签再切回来，右栏恢复这个模块（见 pages/Index.enterTab）
+    rememberPage(3, 'module', key);
+    swapRoute(this.navStack, 'module', param);
   }
 
   private searchResults(): WorkbenchModule[] {
@@ -223,7 +220,9 @@ export struct WorkbenchTab {
       insetH: 0,
       onTap: (): void => {
         const param: Record<string, Object> = { 'key': cat.key, 'stack': this.navStack };
-        this.navStack.pushPath({ name: 'workbench-category', param: param });
+        // 分类页同样是二级页：切页签回来时一并恢复（与模块页同一份记忆）
+        rememberPage(3, 'workbench-category', cat.key);
+        swapRoute(this.navStack, 'workbench-category', param);
       }
     }) {
       Row() {
@@ -310,7 +309,8 @@ export struct WorkbenchTab {
             arrow: true,
             onTap: (): void => {
               // 设置已是根页承载的半模态弹窗（⋮ 菜单同一入口），此处只发事件
-              requestSettings();
+              // 工作台入口 = 正常二级页（⋮ 菜单入口才是半模态弹窗，见 pages/Index.openSettings）
+              swapRoute(this.navStack, 'settings');
             }
           })
           HubRow({

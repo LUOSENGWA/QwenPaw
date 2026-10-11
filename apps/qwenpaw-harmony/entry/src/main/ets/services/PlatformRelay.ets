@@ -22,7 +22,6 @@ import { t, tf } from './I18n';
 
 // 状态口径与 7378 api/types.ts PlatformRelayStatus 一致
 export const RELAY_NOT_CONNECTED: string = 'not_connected';
-export const RELAY_AUTHORIZATION_PENDING: string = 'authorization_pending';
 export const RELAY_CONNECTED: string = 'connected';
 
 export interface PlatformRelayStatus {
@@ -48,7 +47,6 @@ export class PlatformRelayNode {
   name: string = '';
   status: string = '';     // online / offline
   lastSeenAt: string = '';
-  createdAt: string = '';
 }
 
 function parseRelayStatus(data: Object): PlatformRelayStatus {
@@ -150,7 +148,6 @@ export async function listRelayNodes(ctx: Context): Promise<PlatformRelayNode[]>
     node.name = strOf(o, 'name', '');
     node.status = strOf(o, 'status', '');
     node.lastSeenAt = lastSeen;
-    node.createdAt = strOf(o, 'created_at', '');
     out.push(node);
   }
   return out;

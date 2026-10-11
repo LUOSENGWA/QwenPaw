@@ -26,7 +26,8 @@ export async function selectAgent(ctx: Context, conn: QpConnection, agentId: str
     username: conn.username,
     agentId: agentId,
     source: conn.source,
-    serverMode: conn.serverMode
+    serverMode: conn.serverMode,
+    platformAccessPath: conn.platformAccessPath
   };
   await saveConnection(ctx, next);
   emitter.emit(AGENT_CHANGE_EVENT);

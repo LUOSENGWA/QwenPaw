@@ -15,7 +15,6 @@ import { IosGroup, IosRow } from './IosList';
 import { FieldDef, FieldSheet, fieldDef } from './FieldSheet';
 import { ModuleEmpty, ModuleError, ModuleFooter, ModuleLoading } from './ModuleStates';
 import { SheetGate, moduleSheetOptions } from './SheetGate';
-import { UiTokens } from '../theme/UiTokens';
 
 const ASYNC_KEY: string = '__async_execution';
 

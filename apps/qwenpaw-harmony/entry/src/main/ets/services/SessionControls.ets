@@ -1,10 +1,12 @@
 /*
- * 会话运行控制的本机选择（对齐 PR #7378：审批等级这类选择随「发送」生效，不改服务端 Agent 配置）。
+ * 会话运行控制的本机传值（对齐 PR #7378：审批等级随「发送」生效；循环选择是一次性的）。
  * 为什么用模块级单例：运行条挂在 Tabs 的 tabBar builder 内，该子树只构建一次、父组件状态传不进去
  * （见 harmony-arkui-tabbar-builder-runs-once），故由运行条写入、发送链路在发送时读取。
  */
 
-let approvalLevel: string = '';   // 空串 = 跟随 Agent（即不发 request_context）
+// 审批等级：值来自服务端（Agent 级 approval_level，见 services/AgentApproval）。
+// 空串 = 服务端未给值 → 发送不带 request_context.approval_level，由 Agent 配置决定。
+let approvalLevel: string = '';
 
 export function setSessionApproval(value: string): void {
   approvalLevel = value;

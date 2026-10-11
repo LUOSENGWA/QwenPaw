@@ -22,7 +22,6 @@ import { FieldDef, FieldSheet, fieldDef } from './FieldSheet';
 import { OptionsSheet, SheetOption, optionOf } from './OptionsSheet';
 import { ModuleEmpty, ModuleError, ModuleFooter, ModuleLoading } from './ModuleStates';
 import { SheetGate, moduleSheetOptions } from './SheetGate';
-import { UiTokens } from '../theme/UiTokens';
 
 class ProjectInfo {
   path: string = '';

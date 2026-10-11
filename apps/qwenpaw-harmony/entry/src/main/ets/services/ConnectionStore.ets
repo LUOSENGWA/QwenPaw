@@ -7,6 +7,8 @@
 
 import { preferences } from '@kit.ArkData';
 import { Context } from '@kit.AbilityKit';
+import { registerGatewayConnection } from './PlatformGateway';
+import { notifyConnectionChange } from './AppEvents';
 
 export interface QpConnection {
   baseUrl: string;
@@ -15,6 +17,8 @@ export interface QpConnection {
   agentId: string;
   source: string;
   serverMode: string;
+  // 云端实例经 Platform 网关的复签入口（'' = 不需要复签；'platform' 源的连接才有值）
+  platformAccessPath: string;
 }
 
 export function connectionKey(conn: QpConnection): string {
@@ -42,8 +46,12 @@ function parseConn(raw: string): QpConnection | null {
       username: typeof parsed['username'] === 'string' ? parsed['username'] as string : '',
       agentId: typeof parsed['agentId'] === 'string' ? parsed['agentId'] as string : 'default',
       source: typeof parsed['source'] === 'string' ? parsed['source'] as string : 'private',
-      serverMode: typeof parsed['serverMode'] === 'string' ? parsed['serverMode'] as string : ''
+      serverMode: typeof parsed['serverMode'] === 'string' ? parsed['serverMode'] as string : '',
+      platformAccessPath: typeof parsed['platformAccessPath'] === 'string'
+        ? parsed['platformAccessPath'] as string : ''
     };
+    // 请求层按 origin 查"要不要走网关复签"：装载即登记
+    registerGatewayConnection(conn.baseUrl, conn.platformAccessPath);
     return conn;
   } catch (e) {
     return null;
@@ -123,12 +131,15 @@ export async function saveConnection(context: Context, conn: QpConnection): Prom
   }
   next.push(conn);
   await savePayload(context, payloadOf(key, next));
+  // 当前连接变了 → 广播（按服务端取值的东西要跟着重取，如主题色）
+  notifyConnectionChange();
 }
 
 // 切换当前连接
 export async function switchConnection(context: Context, key: string): Promise<void> {
   const p: ConnectionsPayload = await loadPayload(context);
   await savePayload(context, payloadOf(key, p.list));
+  notifyConnectionChange();
 }
 
 // 移除一个连接（若为当前，则回落到剩余首个）
@@ -145,6 +156,8 @@ export async function removeConnection(context: Context, key: string): Promise<v
     current = next.length > 0 ? connectionKey(next[0]) : '';
   }
   await savePayload(context, payloadOf(current, next));
+  // 移除当前连接会让当前落到另一个服务端上 → 同样要广播
+  notifyConnectionChange();
 }
 
 // 断开：清空全部连接（v1/v2 一并清）

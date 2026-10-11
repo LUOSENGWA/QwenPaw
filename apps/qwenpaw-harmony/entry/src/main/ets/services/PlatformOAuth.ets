@@ -16,7 +16,7 @@
  */
 import { util, url } from '@kit.ArkTS';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
-import { t, tf } from './I18n';
+import { t } from './I18n';
 
 // 与 7378 同值：Platform CLI 客户端与 scope
 export const OAUTH_CLIENT_ID: string = 'agentscope-platform-cli';

@@ -89,7 +89,9 @@ export class ThemeManager {
   private static inst: ThemeManager | null = null;
   private presetId: string = DEFAULT_THEME_PRESET.id;
   private customAccent: string = '';
-  private syncEnabled: boolean = false;
+  // 「跟随服务端」默认开启：主色的权威在服务端（控制台 GET /api/config/theme），
+  // 默认就该用服务端那套；只有用户显式选本地预设时才算覆盖（selectPreset 会关掉它）。
+  private syncEnabled: boolean = true;
   private syncedAccent: string = '';
   private syncedAccentDark: string = '';
   private listeners: ThemeListener[] = [];
@@ -125,7 +127,7 @@ export class ThemeManager {
       const pref: preferences.Preferences = await preferences.getPreferences(ctx, PREF_NAME);
       this.presetId = (await pref.get(KEY_PRESET_ID, DEFAULT_THEME_PRESET.id)) as string;
       this.customAccent = (await pref.get(KEY_CUSTOM_ACCENT, '')) as string;
-      this.syncEnabled = (await pref.get(KEY_SYNC_ENABLED, false)) as boolean;
+      this.syncEnabled = (await pref.get(KEY_SYNC_ENABLED, true)) as boolean;
       this.syncedAccent = (await pref.get(KEY_SYNCED_ACCENT, '')) as string;
       this.syncedAccentDark = (await pref.get(KEY_SYNCED_ACCENT_DARK, '')) as string;
       if (this.findPreset(this.presetId) === null) {

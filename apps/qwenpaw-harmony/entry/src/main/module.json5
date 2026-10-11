@@ -41,7 +41,9 @@
         "srcEntry": "./ets/entryability/EntryAbility.ets",
         "description": "$string:EntryAbility_desc",
         "icon": "$media:layered_image",
-        "label": "$string:EntryAbility_label",
+        // 名称与 app.json5 的 label 共用同一个字符串资源：两处引用同一资源 id 时，
+        // 系统（bms）解析 app 级 label 的 id 不会落到能力级的另一个资源上
+        "label": "$string:app_name",
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,

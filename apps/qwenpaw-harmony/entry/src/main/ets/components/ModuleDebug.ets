@@ -36,7 +36,6 @@ export struct ModuleDebug {
   @State error: string = '';
   @State sheetShown: boolean = false;
   private gate: SheetGate = new SheetGate();
-  private conn: QpConnection | null = null;
 
   aboutToAppear(): void {
     this.load();
@@ -49,10 +48,6 @@ export struct ModuleDebug {
     this.sheetShown = true;
   }
 
-  private closeSheet(): void {
-    this.gate.beginClose();
-    this.sheetShown = false;
-  }
 
   private async load(): Promise<void> {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
@@ -62,7 +57,6 @@ export struct ModuleDebug {
       this.loaded = true;
       return;
     }
-    this.conn = c;
     try {
       const resp: http.HttpResponse = await doRequest(
         `${c.baseUrl}/api/console/debug/backend-logs?lines=${LOG_LINES}`,
@@ -106,11 +100,11 @@ export struct ModuleDebug {
         Text(this.logContent.length > 0 ? this.logContent : $r('app.string.module_dbg_empty_content'))
           .fontSize(11)
           .lineHeight(17)
-          .fontColor('#EDE7E1')
+          .fontColor($r('app.color.text_primary_strong'))
           .width('100%')
           .padding(12)
           .borderRadius(12)
-          .backgroundColor(Color.Black)
+          .backgroundColor($r('app.color.card_bg'))
           .textAlign(TextAlign.Start)
           // 长日志行自动换行，避免横向溢出
           .wordBreak(WordBreak.BREAK_ALL)

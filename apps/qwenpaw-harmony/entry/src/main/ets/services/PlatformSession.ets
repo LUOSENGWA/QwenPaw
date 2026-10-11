@@ -80,6 +80,9 @@ function parseRetryAfter(value: string): number {
 export interface PlatformResponse {
   status: number;
   body: string;
+  // 响应下发的 cookie（平台响应也可能带会话 cookie；网关复签要把它回带到实例域名，
+  // 见 PlatformGateway：不同域之间不会自动共享，必须显式放进请求 header）
+  cookies: string;
 }
 
 // 单次 HTTP：body 为 null 表示无请求体；token 为空则不带 Authorization
@@ -107,7 +110,11 @@ export async function platformFetchRaw(path: string, method: http.RequestMethod,
   promise.then((): void => req.destroy()).catch((): void => req.destroy());
   const resp: http.HttpResponse = await promise;
   const result: Object = resp.result;
-  return { status: resp.responseCode, body: typeof result === 'string' ? result as string : '' };
+  return {
+    status: resp.responseCode,
+    body: typeof result === 'string' ? result as string : '',
+    cookies: typeof resp.cookies === 'string' ? resp.cookies as string : ''
+  };
 }
 
 // 错误体解析（对齐 7378 platformResponseError：优先 error.message/detail，其次 detail/message）
@@ -376,6 +383,32 @@ export async function platformLogout(ctx: Context): Promise<void> {
 }
 
 // 带鉴权的 Platform 请求：401/会话失效时自动续期重试一次，返回信封 data 字段
+/** 与 platformRequest 同语义（带登录态、失败单次续期），但返回整包（含 cookie）供网关复签用 */
+export async function platformRequestRaw(ctx: Context, path: string, method: http.RequestMethod,
+  body: string | null): Promise<PlatformResponse> {
+  let token: string = await getPlatformAccessToken(ctx);
+  if (token.length === 0) {
+    throw new Error(t($r('app.string.platform_err_login_first')));
+  }
+  let resp: PlatformResponse = await platformFetchRaw(path, method, body, token);
+  if (resp.status >= 200 && resp.status < 300) {
+    return resp;
+  }
+  const err: PlatformRequestError = responseError(resp.status, resp.body);
+  if (!isInvalidSessionError(err as Error)) {
+    throw err;
+  }
+  const next: PlatformSession | null = await refreshOnce(ctx);
+  if (next === null) {
+    throw err;
+  }
+  resp = await platformFetchRaw(path, method, body, next.accessToken);
+  if (resp.status < 200 || resp.status >= 300) {
+    throw responseError(resp.status, resp.body);
+  }
+  return resp;
+}
+
 export async function platformRequest(ctx: Context, path: string, method: http.RequestMethod,
   body: string | null): Promise<Object> {
   let token: string = await getPlatformAccessToken(ctx);

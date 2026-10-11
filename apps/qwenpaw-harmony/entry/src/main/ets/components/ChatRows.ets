@@ -19,40 +19,70 @@ import { common } from '@kit.AbilityKit';
 import { pasteboard } from '@kit.BasicServicesKit';
 import { UIContext, SymbolGlyphModifier } from '@kit.ArkUI';
 import {
-  DisplayMessage, DisplayPart, textOfParts, partsTextLen
+  DisplayMessage, DisplayPart, textOfParts
 } from '../services/ChatDetailService';
 import { ThemeSnapshot, ThemeManager } from '../theme/ThemeManager';
 import { UiTokens } from '../theme/UiTokens';
-import { downloadToCache, saveToGallery, shareFile, safeNameOf } from '../services/MediaActions';
+import { downloadToCache, saveToGallery, shareFile, safeNameOf, openCachedFilePreview,
+  canSystemPreview, isMarkdownName, isTextualName, readTextFile, TextRead,
+  saveCachedFileWithPicker, openCachedFileWithOtherApp, saveBytesToCache,
+  defaultNameOf } from '../services/MediaActions';
+import { healStreamingMarkdown } from '../services/StreamMarkdown';
+import { fileIconOf } from '../theme/FileIcons';
+import { isDarkMode } from '../theme/Accent';
+import { SheetGate, moduleSheetOptions } from './SheetGate';
 import { Markdown } from '../vendor/markdown/Index';
 import { MarkdownOptions, MarkdownTheme, MarkdownFontStyle } from '../vendor/markdown/Index';
 import { CodeStyle, CodeSpan, BlockQuoteStyle, DriveStyle } from '../vendor/markdown/src/main/ets/config/MarkdownTheme';
 import { contextMenuOptions } from '../theme/MenuMaterial';
 
 // ============ 扁平行模型 ============
-// 会话被展平成行序列：List 的每个 ListItem 承载一行。key 只由稳定身份构成（不含文本长度等
-// 内容指纹）——已完成行的内容不再变 ⇒ 键不变 ⇒ ForEach 不重跑 itemGenerator、不重建子树；
-// 唯一会随每帧变化的行由页面挂在 ForEach 之外直接构造。
-export interface ConversationRow {
-  key: string;                 // ForEach 键（唯一且稳定）
-  kind: string;                // user | message | steps | media | pending
-  turnId: string;              // 所属回合 id
-  messages: DisplayMessage[];  // message / steps 行的消息；user 行为 [用户消息]
-  parts: DisplayPart[];        // media 行的媒体分片
-  pending: boolean;            // 所属回合是否在途（过程组生成中默认展开 / message 是否显示「最终回复」）
-  expanded?: boolean;          // 过程组（stepsHeader）当前是否展开（展开态由页面持有）
-  groupKey?: string;           // 过程组的稳定键（turnId:块序号），用于页面切换展开态
-  last: boolean;               // message 行是否为该回合最终回复（显示「最终回复」标签）
-  generating: boolean;         // steps 行是否为该回合正在生成的「活动组」（活动组显示转圈与进行中状态）
+// 会话被展平成行序列：List 的每个 ListItem 承载一行，键只含结构信息（回合 + 块序号），
+// 行内容的变化走可观察对象原地更新（见下方 ConversationRow 注释）。
+/*
+ * 列表行模型：@Observed 类 + 行组件用 @ObjectLink 接收 —— 这是"流式期间只有那一行内容在变"
+ * 的正确更新路径。ArkUI 的 ForEach 只在键变化时重跑 itemGenerator：把内容指纹放进键可以让在途行
+ * 刷新，但代价是**每帧销毁重建该行**（整卡闪、滚动被打断，真机表现为"刷屏"）；改用可观察对象后，
+ * 键保持结构键不变，页面只把新数据**赋值到同一个行对象**上，行组件原地更新（不重建子树）。
+ * 在途回合的行由页面复用同一实例；已完结回合的行每次新建（没有观察者 → 不会产生无谓刷新）。
+ */
+@Observed
+export class ConversationRow {
+  key: string = '';            // ForEach 键（唯一且稳定，只含结构信息）
+  kind: string = '';           // user | message | steps | media | pending
+  turnId: string = '';         // 所属回合 id
+  messages: DisplayMessage[] = [];  // message / steps 行的消息；user 行为 [用户消息]
+  parts: DisplayPart[] = [];   // media 行的媒体分片
+  pending: boolean = false;    // 所属回合是否在途
+  expanded: boolean = false;   // 过程组（stepsHeader）当前是否展开（展开态由页面持有）
+  groupKey: string = '';       // 过程组的稳定键（turnId:块序号），用于页面切换展开态
+  last: boolean = false;       // message 行是否为该回合最终回复（显示「最终回复」标签）
+  generating: boolean = false; // steps 行是否为该回合正在生成的「活动组」
 }
 
-export const EMPTY_ROW: ConversationRow = {
-  key: '', kind: '', turnId: '', messages: [], parts: [], pending: false, last: false, generating: false
-};
+export function rowOf(kind: string, key: string, turnId: string, messages: DisplayMessage[],
+  parts: DisplayPart[]): ConversationRow {
+  const r: ConversationRow = new ConversationRow();
+  r.kind = kind;
+  r.key = key;
+  r.turnId = turnId;
+  r.messages = messages;
+  r.parts = parts;
+  return r;
+}
 
 // 展开态「不限行数」用的行数上限：不能用 maxLines(0) —— 真机实测该值被当作 0 行处理，
 // 展开后文本反而整段不显示（Text 节点消失）。用一个足够大的整数表达「不限制」。
 const NO_LINE_LIMIT: number = 100000;
+
+// 喂给 Markdown 的内容节流窗口（ms）。对应 QwenCode web-shell Markdown.tsx 的 useThrottledValue
+// （React useDeferredValue 的替代实现；它取 80ms，本工程一次 flush 已是 60ms 的批量，取稍宽的窗口
+// 让"整段重新解析"的节奏更稳）：本工程 Markdown 组件每次 content 变化都会重起一次解析任务，
+// 流式期间逐分片重解析会让整块反复重排。仅对喂入内容做节流，窗口内的最后一批变化由定时器兜住，
+// 流一停立即落盘（不会停在旧内容上）；行内文本与非 markdown 部分不受影响。
+const MD_THROTTLE_MS: number = 180;
+// 页内只读预览的文本读取上限：超过就只读前 256KB 并附截断提示（避免超大文件卡住渲染）
+const TEXT_PREVIEW_CAP: number = 256 * 1024;
 
 // ============ 媒体渲染（对齐 PR #7378 features/chat/MessageParts.tsx）============
 // 媒体 URL 解析对齐 7378 client.ts mediaSource：http/https/data 原样，
@@ -64,12 +94,48 @@ function mediaUrl(baseUrl: string, rawUrl: string): string {
     return rawUrl;
   }
   const path: string = rawUrl.startsWith('file://') ? rawUrl.slice(7) : rawUrl;
-  const previewPath: string = path.startsWith('/') ? path : `/${path}`;
-  return `${baseUrl}/api/files/preview${previewPath}`;
+  // 绝对路径（工具写工作区外的文件、截图等）→ 文件预览通道；
+  // 相对路径（工具在工作区内写文件时给的就是相对路径）→ 工作区文件下载通道
+  if (path.startsWith('/')) {
+    return `${baseUrl}/api/files/preview${path}`;
+  }
+  return `${baseUrl}/api/workspace/file-download?root=workspace&path=${encodeURIComponent(path)}`;
 }
 
 function mediaPartsOf(parts: DisplayPart[]): DisplayPart[] {
   return parts.filter((p: DisplayPart): boolean => p.type !== 'text');
+}
+
+// 同一相对路径的另一个工作区根：产物可能落在「绑定项目目录」（console 的 project 根）或
+// 「智能体自身存储根」（workspace 根）两处 —— console 对相对路径固定取 project 根，本工程
+// 历史上按 workspace 根取，两者各自覆盖一部分产物。故下载失败时换另一个根再取一次。
+// 绝对路径 / 内联数据没有第二个根（走 /api/files/preview 通道），返回空串表示无可回退。
+function altRootUrl(baseUrl: string, rawUrl: string): string {
+  if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://') || rawUrl.startsWith('data:')) {
+    return '';
+  }
+  const path: string = rawUrl.startsWith('file://') ? rawUrl.slice(7) : rawUrl;
+  if (path.startsWith('/')) {
+    return '';
+  }
+  return `${baseUrl}/api/workspace/file-download?root=project&path=${encodeURIComponent(path)}`;
+}
+
+// 该消息是否有可见内容（非空白文本 / 媒体分片 / 错误）。服务端会下发 text 只有 "\n\n" 的 message
+// 记录（实测同一会话 26 条），它渲染成空内容 + 卡片底色 = 一张空白卡，故按可见性判定后不出行。
+export function rowHasVisibleContent(m: DisplayMessage): boolean {
+  if (m.error !== undefined && m.error.length > 0) {
+    return true;
+  }
+  for (const p of m.parts) {
+    if (p.type !== 'text') {
+      return true;
+    }
+    if (p.text !== undefined && p.text.trim().length > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // 复制纯文本到系统剪贴板；成功返回 true（调用方据此置「复制完成」反馈）
@@ -86,20 +152,6 @@ async function copyTextToClipboard(ctx: UIContext, text: string): Promise<boolea
   }
 }
 
-// 媒体类型图标（用文本符号：SymbolGlyph.fontColor 不接受 string 主题色）
-function mediaGlyph(type: string): string {
-  if (type === 'video') {
-    return '🎬';
-  }
-  if (type === 'audio') {
-    return '🎵';
-  }
-  if (type === 'image') {
-    return '🖼';
-  }
-  return '📄';
-}
-
 // 单个媒体块：图片 → Image（data URL 先转 PixelMap）；video/audio/file → 文件卡
 @Component
 struct MediaThumb {
@@ -109,9 +161,31 @@ struct MediaThumb {
   @State pixelMap: image.PixelMap | undefined = undefined;
   @State failed: boolean = false;
   @State busy: boolean = false;
+  // 内联 base64 图（data: URL）的原始字节：除解码成 PixelMap 展示外另留一份，
+  // 点开时落成缓存文件交给系统预览（这类图没有可下载的远端地址）
+  private inlineBytes: Uint8Array | undefined = undefined;
+  // 页内只读预览（Preview Kit 打不开的文本/代码类文件）：内容 + 是否 markdown + 标题（文件名）
+  @State textShown: boolean = false;
+  @State textBody: string = '';
+  @State textMd: boolean = false;
+  @State textName: string = '';
+  @State dark: boolean = false;
+  private sheetGate: SheetGate = new SheetGate();
 
   private toast(msg: string): void {
     this.getUIContext().getPromptAction().showToast({ message: msg });
+  }
+
+  // 打开失败提示：区分「服务端已经没有这个文件」与「格式不支持」。
+  // 产物源文件消失是常态（工具写到容器 /tmp 的临时图，服务端清理后只剩历史里的路径），
+  // 这时给「源文件已不在服务端」，不要一律报"无法预览"让人以为格式不支持。
+  private failToast(e: Object): void {
+    const msg: string = (e as Error).message !== undefined ? (e as Error).message : '';
+    if (msg.indexOf('404') >= 0) {
+      this.toast(this.t($r('app.string.chat_file_gone')));
+      return;
+    }
+    this.toast(this.t($r('app.string.chat_file_no_preview')));
   }
 
   // 资源文案取字符串（工程统一口径：resourceManager.getStringSync）
@@ -132,11 +206,59 @@ struct MediaThumb {
     return mediaUrl(this.baseUrl, this.part.url !== undefined ? this.part.url : '');
   }
 
+  // 落到缓存（带回退），返回缓存路径 —— 点开预览 / 保存到 / 分享 / 其他应用打开都先过这里：
+  //   · 内联 base64（data:）没有可下载的远端地址 → 用内存里那份字节直接落盘；
+  //   · 远端地址失败且是相对路径 → 换另一个工作区根再取一次（见 altRootUrl）。
+  private async fetchToCache(type: string): Promise<string> {
+    const ctx: common.UIAbilityContext = this.hostCtx();
+    const raw: string = this.part.url !== undefined ? this.part.url : '';
+    if (raw.startsWith('data:')) {
+      const bytes: Uint8Array | undefined = this.inlineBytes;
+      if (bytes === undefined) {
+        throw new Error('inline data not decoded yet');
+      }
+      return saveBytesToCache(ctx, bytes, this.fileNameOf());
+    }
+    try {
+      return await downloadToCache(ctx, this.urlOf(), type, this.fileNameOf());
+    } catch (e) {
+      const alt: string = altRootUrl(this.baseUrl, raw);
+      if (alt.length === 0) {
+        throw e as Error;
+      }
+      return await downloadToCache(ctx, alt, type, this.fileNameOf());
+    }
+  }
+
   private fileNameOf(): string {
+    const rawUrl: string = this.part.url !== undefined ? this.part.url : '';
+    const given: string = this.part.name !== undefined && this.part.name.length > 0 ? this.part.name : '';
+    if (given.length > 0) {
+      return safeNameOf(given, this.part.type);
+    }
+    // 内联数据没有文件名（末段是 base64 正文，切出来是垃圾）→ 按类型给默认名
+    if (rawUrl.startsWith('data:')) {
+      return defaultNameOf(this.part.type);
+    }
     const segs: string[] = this.urlOf().split('/');
     const last: string = segs.length > 0 ? segs[segs.length - 1] : '';
-    const raw: string = this.part.name !== undefined && this.part.name.length > 0 ? this.part.name : last;
-    return safeNameOf(raw, this.part.type);
+    return safeNameOf(last, this.part.type);
+  }
+
+  // 文件卡副标题：工具产出文件显示变化类型（新建 / 修改 / 发送，对齐 console 的 artifactChange），
+  // 其余分片就显示类型名
+  private subtitle(): string {
+    const note: string = this.part.note !== undefined ? this.part.note : '';
+    if (note === 'created') {
+      return this.t($r('app.string.chat_file_created'));
+    }
+    if (note === 'modified') {
+      return this.t($r('app.string.chat_file_modified'));
+    }
+    if (note === 'sent') {
+      return this.t($r('app.string.chat_file_sent'));
+    }
+    return this.part.type;
   }
 
   // 保存到相册：安全控件回调内已有临时授权 → 下载到缓存再写入媒体库（对齐 7378 cacheMedia + saveToLibrary）
@@ -174,7 +296,153 @@ struct MediaThumb {
     }
   }
 
-  // 媒体长按菜单：保存到相册（安全控件）+ 系统分享（对齐 7378 mediaActions 两项）
+  // 点文件卡 → 打开：Preview Kit 支持表内的格式（Office / pdf / 图片 / 音视频 / 文本类）交给系统预览；
+  // 表外的文本/代码类（md / py / sh / json / log …）系统预览打不开，落页内只读预览（md 走渲染）。
+  private openFile(): void {
+    const name: string = this.fileNameOf();
+    if (!canSystemPreview(name) && isTextualName(name)) {
+      this.openTextPreview(name);
+      return;
+    }
+    this.previewFile();
+  }
+
+  // 页内只读预览：下载到缓存 → 按文本读取（超过 TEXT_PREVIEW_CAP 截断并附提示）→ 半模态面板
+  private async openTextPreview(name: string): Promise<void> {
+    if (this.busy) {
+      return;
+    }
+    this.busy = true;
+    try {
+      const path: string = await this.fetchToCache(this.part.type);
+      const read: TextRead = readTextFile(path, TEXT_PREVIEW_CAP);
+      if (read.text.length === 0) {
+        throw new Error('empty');
+      }
+      if (!this.sheetGate.request()) {
+        return;
+      }
+      this.dark = isDarkMode(this.hostCtx());
+      this.textName = name;
+      this.textMd = isMarkdownName(name);
+      this.textBody = read.truncated
+        ? `${read.text}\n\n[${this.t($r('app.string.module_files_truncated'))}]`
+        : read.text;
+      this.textShown = true;
+    } catch (e) {
+      this.failToast(e as Object);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  // 页内只读预览面板：标题 = 文件名，正文 = markdown 渲染 / 纯文本（跟随半模态材质与关叉避让口径）
+  @Builder
+  textPreviewSheet() {
+    Column() {
+      Text(this.textName)
+        .fontSize(UiTokens.fsTitle)
+        .fontWeight(FontWeight.Bold)
+        .width('100%')
+        .maxLines(2)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .margin({ bottom: 12 })
+      if (this.textMd) {
+        Scroll() {
+          Column() {
+            Markdown({ content: this.textBody, options: { darkMode: this.dark } })
+          }
+          .width('100%')
+          .padding(UiTokens.cardPad)
+          .borderRadius(UiTokens.cardRadius)
+          .backgroundColor($r('app.color.sheet_card_bg'))
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .align(Alignment.Top)
+        .scrollBar(BarState.Auto)
+      } else {
+        Scroll() {
+          Text(this.textBody)
+            .fontSize(UiTokens.fsSecondary)
+            .lineHeight(20)
+            .width('100%')
+            .padding(UiTokens.cardPad)
+            .borderRadius(UiTokens.cardRadius)
+            .backgroundColor($r('app.color.sheet_card_bg'))
+            .textAlign(TextAlign.Start)
+            .wordBreak(WordBreak.BREAK_ALL)
+            .copyOption(CopyOptions.LocalDevice)
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .align(Alignment.Top)
+        .scrollBar(BarState.Auto)
+      }
+    }
+    .width('100%')
+    .height('100%')
+    .padding({ left: UiTokens.pageHMargin, right: UiTokens.pageHMargin, bottom: UiTokens.pageHMargin })
+  }
+
+  // 保存到…：下载到缓存后交给系统 picker 选位置（可选目录）——与「文件」模块同一出口
+  private async saveViaPicker(): Promise<void> {
+    if (this.busy) {
+      return;
+    }
+    this.busy = true;
+    try {
+      const ctx: common.UIAbilityContext = this.hostCtx();
+      const path: string = await this.fetchToCache(this.part.type);
+      const saved: boolean = await saveCachedFileWithPicker(ctx, path, this.fileNameOf());
+      if (saved) {
+        this.toast(this.t($r('app.string.module_files_downloaded')));
+      }
+    } catch (e) {
+      this.toast(`${this.t($r('app.string.chat_media_save_failed'))}: ${(e as Error).message}`);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  // 其他应用打开：下载到缓存后走官方隐式 Want（见 services/MediaActions.openCachedFileWithOtherApp）
+  private async openExternally(): Promise<void> {
+    if (this.busy) {
+      return;
+    }
+    this.busy = true;
+    try {
+      const ctx: common.UIAbilityContext = this.hostCtx();
+      const path: string = await this.fetchToCache(this.part.type);
+      await openCachedFileWithOtherApp(ctx, path, this.fileNameOf());
+    } catch (e) {
+      this.toast(this.t($r('app.string.module_files_open_external_failed')));
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  // 点开 → 系统预览服务（Preview Kit，文本/Office/图片/音视频都能开）。内联 base64 图与远端图
+  // 走同一出口（差别只在 fetchToCache 怎么拿到文件）。
+  // 预览不可用（格式不支持 / 设备无预览服务 / 源文件已被服务端清理）时给对应提示。
+  private async previewFile(): Promise<void> {
+    if (this.busy) {
+      return;
+    }
+    this.busy = true;
+    try {
+      const ctx: common.UIAbilityContext = this.hostCtx();
+      const path: string = await this.fetchToCache(this.part.type);
+      await openCachedFilePreview(ctx, path, this.fileNameOf());
+    } catch (e) {
+      this.failToast(e as Object);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  // 长按菜单：保存 / 分享 / 其他应用打开 —— 与工作台「文件」模块同一套出口
+  // （图片/视频的「保存」= 安全控件存相册，文件卡的「保存」= 系统 picker 选目录另存）
   @Builder
   mediaMenu() {
     Column() {
@@ -182,8 +450,22 @@ struct MediaThumb {
         SaveButton({ icon: SaveIconStyle.FULL_FILLED, text: SaveDescription.DOWNLOAD })
           .iconSize(20)
           .onClick(this.handleSave)
-        Divider().color($r('app.color.card_bg')).strokeWidth(1)
+      } else {
+        Row({ space: 8 }) {
+          Image($r('app.media.folder_plus'))
+            .width(18).height(18)
+            .fillColor($r('app.color.text_secondary'))
+          Text($r('app.string.module_files_save_as'))
+            .fontSize(UiTokens.fsBody)
+            .fontColor($r('app.color.text_primary_strong'))
+        }
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+        .onClick((): void => {
+          this.saveViaPicker();
+        })
       }
+      Divider().color($r('app.color.card_bg')).strokeWidth(1)
       Row({ space: 8 }) {
         Image($r('app.media.link'))
           .width(18).height(18)
@@ -197,6 +479,20 @@ struct MediaThumb {
       .onClick((): void => {
         this.shareMedia();
       })
+      Divider().color($r('app.color.card_bg')).strokeWidth(1)
+      Row({ space: 8 }) {
+        Image($r('app.media.book_open'))
+          .width(18).height(18)
+          .fillColor($r('app.color.text_secondary'))
+        Text($r('app.string.module_files_open_external'))
+          .fontSize(UiTokens.fsBody)
+          .fontColor($r('app.color.text_primary_strong'))
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, top: 10, bottom: 10 })
+      .onClick((): void => {
+        this.openExternally();
+      })
     }
     .width(180)
     .padding(6)
@@ -209,7 +505,8 @@ struct MediaThumb {
     }
   }
 
-  // base64 data URL → PixelMap（ArkTS Image 不直读 data URL；对齐 7378 base64 source 分支）
+  // base64 data URL → PixelMap（ArkTS Image 不直读 data URL；对齐 7378 base64 source 分支）。
+  // 原始字节另留一份：Image 只能"看"，点开要出文件（见 openInline）。
   private async decodeDataUrl(url: string): Promise<void> {
     const comma: number = url.indexOf(',');
     if (comma < 0) {
@@ -217,6 +514,7 @@ struct MediaThumb {
     }
     try {
       const bytes: Uint8Array = new util.Base64Helper().decodeSync(url.slice(comma + 1));
+      this.inlineBytes = bytes;
       const buf: ArrayBuffer =
         bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
       const src: image.ImageSource = image.createImageSource(buf);
@@ -229,8 +527,10 @@ struct MediaThumb {
   @Builder
   FileCard() {
     Row() {
-      Text(mediaGlyph(this.part.type))
-        .fontSize(20)
+      Image(fileIconOf(this.fileNameOf()))
+        .width(20)
+        .height(20)
+        .fillColor($r('app.color.text_secondary'))
         .margin({ right: 10 })
       Column() {
         Text(this.part.name !== undefined && this.part.name.length > 0 ? this.part.name : this.part.type)
@@ -238,9 +538,11 @@ struct MediaThumb {
           .fontColor($r('app.color.text_primary_strong'))
           .maxLines(1)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.part.type)
+        Text(this.subtitle())
           .fontSize(UiTokens.fsCaption)
           .fontColor($r('app.color.text_tertiary'))
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
           .margin({ top: 2 })
       }
       .alignItems(HorizontalAlign.Start)
@@ -250,6 +552,15 @@ struct MediaThumb {
     .padding({ left: 10, right: 10, top: 8, bottom: 8 })
     .borderRadius(12)
     .backgroundColor($r('app.color.card_bg'))
+    .onClick((): void => {
+      this.openFile();
+    })
+    // 页内只读预览面板（Preview Kit 表外的文本类才用得上），与长按菜单分挂不同节点：
+    // 同一节点挂多个半模态只有最后一个生效（SheetGate 口径），故菜单留在外层容器
+    .bindSheet(this.textShown, this.textPreviewSheet(),
+      moduleSheetOptions(680, this.sheetGate, (v: boolean): void => {
+        this.textShown = v;
+      }))
   }
 
   build() {
@@ -263,6 +574,10 @@ struct MediaThumb {
             .objectFit(ImageFit.Cover)
             .borderRadius(UiTokens.cardRadius)
             .backgroundColor($r('app.color.card_bg'))
+            // 内联 base64 图同样可点开：与远端图同一出口（点开 = 系统预览）
+            .onClick((): void => {
+              this.previewFile();
+            })
         } else {
           Image(this.urlOf())
             .width('100%')
@@ -272,6 +587,11 @@ struct MediaThumb {
             .backgroundColor($r('app.color.card_bg'))
             .onError((): void => {
               this.failed = true;
+            })
+            // 点图 → 系统预览（Preview Kit）：图片此前只能看不能开。
+            // data: 内联图（pixelMap 分支）不挂点击——它没有可下载的远端地址
+            .onClick((): void => {
+              this.previewFile();
             })
         }
       } else {
@@ -482,7 +802,9 @@ export struct UserRow {
 // ============ 消息气泡行（对齐 7378 MessageBubble）============
 @Component
 export struct MessageRow {
-  @Prop message: DisplayMessage = { id: '', role: 'assistant', kind: 'message', parts: [] };
+  @Prop @Watch('onMessageChanged') message: DisplayMessage = { id: '', role: 'assistant', kind: 'message', parts: [] };
+  // 本条是否仍在流式写入（回合未落定）：渲染前对 markdown 做自愈（见 StreamMarkdown）
+  @Prop @Watch('onMessageChanged') streaming: boolean = false;
   @Prop last: boolean = false;
   @Prop isDark: boolean = false;
   @Prop theme: ThemeSnapshot = ThemeManager.get().snapshot();
@@ -490,6 +812,62 @@ export struct MessageRow {
   @State expanded: boolean = false;
   @State selecting: boolean = false;
   @State copied: boolean = false;
+  // 喂给 Markdown 的节流文本（见 MD_THROTTLE_MS 注释）
+  @State mdShown: string = '';
+  private mdTimer: number = -1;
+
+  aboutToAppear(): void {
+    this.mdShown = this.mdForRender();
+  }
+
+  aboutToDisappear(): void {
+    if (this.mdTimer >= 0) {
+      clearTimeout(this.mdTimer);
+      this.mdTimer = -1;
+    }
+  }
+
+  // 渲染用 markdown：流式中自愈未闭合标记，落定后用原文（落盘的文本才是事实）
+  private mdForRender(): string {
+    const raw: string = this.text();
+    return this.streaming ? healStreamingMarkdown(raw) : raw;
+  }
+
+  // Markdown 选项对象必须复用：每次 build 新建对象会让 Markdown 组件的 @Monitor('options') 每次都
+  // 触发（重新 deepMerge 主题 + 重新赋值 optionsClass ⇒ 整块 markdown 子树跟着重渲染），即使内容
+  // 没变 —— 流式期间即表现为"整块一直在重绘/闪"。按输入指纹缓存，输入不变就复用同一实例。
+  private optsKey: string = '';
+  private optsCache: MarkdownOptions | null = null;
+
+  private renderOptions(expanded: boolean): MarkdownOptions {
+    const key: string = `${this.isDark ? 'd' : 'l'}|${expanded ? 'e' : 'p'}|${this.theme.accent}|${this.theme.accentDark}`;
+    let out: MarkdownOptions | null = this.optsCache;
+    if (out === null || this.optsKey !== key) {
+      out = this.mdOptions(expanded);
+      this.optsCache = out;
+      this.optsKey = key;
+    }
+    return out;
+  }
+
+  // 文本变化 → 节流落盘（窗口内只安排一次）；流一停立刻落盘，不等窗口
+  private onMessageChanged(): void {
+    if (!this.streaming) {
+      if (this.mdTimer >= 0) {
+        clearTimeout(this.mdTimer);
+        this.mdTimer = -1;
+      }
+      this.mdShown = this.mdForRender();
+      return;
+    }
+    if (this.mdTimer >= 0) {
+      return;
+    }
+    this.mdTimer = setTimeout((): void => {
+      this.mdTimer = -1;
+      this.mdShown = this.mdForRender();
+    }, MD_THROTTLE_MS);
+  }
 
   private text(): string {
     return textOfParts(this.message.parts);
@@ -659,8 +1037,8 @@ export struct MessageRow {
             .textOverflow({ overflow: TextOverflow.Ellipsis })
             .copyOption(CopyOptions.LocalDevice)
         } else {
-          // 普通态：markdown 渲染（口径见 mdOptions 注释）
-          Markdown({ content: this.text(), options: this.mdOptions(this.expanded) })
+          // 普通态：markdown 渲染（口径见 mdOptions 注释）；内容走节流副本（见 MD_THROTTLE_MS）
+          Markdown({ content: this.mdShown, options: this.renderOptions(this.expanded) })
             .width('100%')
         }
         if (this.collapsible()) {
@@ -731,7 +1109,10 @@ export struct MediaRow {
       .width('100%')
       .alignItems(VerticalAlign.Center)
       .onClick((): void => {
-        this.expanded = !this.expanded;
+        // 展开/收起包在显式动画里（文件卡是"放大/缩小"，不是瞬跳）
+        this.getUIContext().animateTo({ duration: 220, curve: Curve.EaseInOut }, (): void => {
+          this.expanded = !this.expanded;
+        });
       })
       if (this.expanded) {
         MediaParts({ parts: this.parts, baseUrl: this.baseUrl })
@@ -938,13 +1319,80 @@ export struct ProcessHeader {
 
 @Component
 struct ProcessRow {
-  @Prop message: DisplayMessage = { id: '', role: 'assistant', kind: 'message', parts: [] };
+  @Prop @Watch('onMessageChanged') message: DisplayMessage = { id: '', role: 'assistant', kind: 'message', parts: [] };
   @Prop isDark: boolean = false;
   @Prop theme: ThemeSnapshot = ThemeManager.get().snapshot();
-  // 本行所属过程组是否为「活动组」（正在生成）
-  @Prop generating: boolean = false;
+  // 本行所属过程组是否为「活动组」（正在生成）；同时作为"流式中"判据 → 渲染前自愈未闭合标记
+  @Prop @Watch('onMessageChanged') generating: boolean = false;
+  // 本行是否为组内末位（活动组里正在被写入的那条思考行 → 行首转圈）
+  @Prop last: boolean = false;
   // 工具行：展开参数 / 结果详情；思考行：展开全文（长文本默认折叠）
   @State detailExpanded: boolean = false;
+  // 喂给 Markdown 的节流文本（见 MD_THROTTLE_MS 注释）
+  @State mdShown: string = '';
+  private mdTimer: number = -1;
+
+  // 资源文案取字符串（工程统一口径：resourceManager.getStringSync）
+  private t(res: Resource): string {
+    try {
+      const host: common.Context = this.getUIContext().getHostContext() as common.Context;
+      return host.resourceManager.getStringSync(res.id);
+    } catch (e) {
+      return '';
+    }
+  }
+
+  // 渲染用 markdown：流式中自愈未闭合标记，落定后用原文（落盘的文本才是事实）
+  private mdForRender(): string {
+    const raw: string = this.text();
+    return this.generating ? healStreamingMarkdown(raw) : raw;
+  }
+
+  // Markdown 选项对象必须复用（理由同 MessageRow.renderOptions）：每次 build 新建对象会触发
+  // Markdown 的 @Monitor('options') → 整块子树重渲染，流式期间表现为"一直在重绘/闪"。
+  private optsKey: string = '';
+  private optsCache: MarkdownOptions | null = null;
+
+  private renderReasoningOptions(expanded: boolean): MarkdownOptions {
+    const key: string = `${this.isDark ? 'd' : 'l'}|${expanded ? 'e' : 'p'}|${this.theme.accent}|${this.theme.accentDark}`;
+    let out: MarkdownOptions | null = this.optsCache;
+    if (out === null || this.optsKey !== key) {
+      out = this.mdReasoning(expanded);
+      this.optsCache = out;
+      this.optsKey = key;
+    }
+    return out;
+  }
+
+  aboutToAppear(): void {
+    this.mdShown = this.mdForRender();
+  }
+
+  aboutToDisappear(): void {
+    if (this.mdTimer >= 0) {
+      clearTimeout(this.mdTimer);
+      this.mdTimer = -1;
+    }
+  }
+
+  // 文本变化 → 节流落盘（窗口内只安排一次）；流一停立刻落盘，不等窗口
+  private onMessageChanged(): void {
+    if (!this.generating) {
+      if (this.mdTimer >= 0) {
+        clearTimeout(this.mdTimer);
+        this.mdTimer = -1;
+      }
+      this.mdShown = this.mdForRender();
+      return;
+    }
+    if (this.mdTimer >= 0) {
+      return;
+    }
+    this.mdTimer = setTimeout((): void => {
+      this.mdTimer = -1;
+      this.mdShown = this.mdForRender();
+    }, MD_THROTTLE_MS);
+  }
 
   private accentColor(): string {
     return this.isDark ? this.theme.accentDark : this.theme.accent;
@@ -989,9 +1437,83 @@ struct ProcessRow {
     return $r('app.color.text_tertiary');
   }
 
-  // 进行中：活动组里尚未返回结果的工具行 → 行尾转圈
+  // 思考行：整行以灰底卡片呈现（对齐 console 的 OperateCard），与工具行区分
+  private thinking(): boolean {
+    return this.message.kind === 'reasoning';
+  }
+
+  // 行首图标槽（对齐 console ToolCardShell 的 summary 图标）：思考行 = 灯泡；
+  // 工具行 = 成功对勾 / 失败叉（console 的 toolCallIconSuccess / toolCallIconError）
+  private leadIcon(): Resource {
+    if (this.message.kind === 'reasoning') {
+      return $r('app.media.lightbulb');
+    }
+    return this.stateLevel() === 1 ? $r('app.media.circle_x') : $r('app.media.circle_check');
+  }
+
+  private leadIconColor(): ResourceColor {
+    return this.stateLevel() === 1 ? $r('app.color.status_error') : this.accentColor();
+  }
+
+  // 行首标题：调用中追加「处理中...」（对齐 console：{title} {t("tool.loading")}）
+  private leadTitle(): ResourceStr {
+    if (!this.running()) {
+      return this.title();
+    }
+    const loading: string = this.t($r('app.string.chat_tool_loading'));
+    if (this.message.kind === 'tool') {
+      const name: string = toolLabel(this.message.toolName);
+      const base: string = name.length > 0 ? name : this.t($r('app.string.chat_tool_default'));
+      return `${base} ${loading}`;
+    }
+    return `${this.t($r('app.string.chat_process_thinking_label'))} ${loading}`;
+  }
+
+  // 调用中（对齐 console ToolCardShell：status === "calling" && isStreaming）→ 行首转圈：
+  // ① 活动组里尚未返回结果的工具行；② 活动组末位那条（正在被写入的思考行）。
   private running(): boolean {
-    return this.message.kind === 'tool' && this.generating && this.stateLevel() === 0;
+    if (!this.generating) {
+      return false;
+    }
+    if (this.message.kind === 'tool') {
+      return this.stateLevel() === 0;
+    }
+    return this.message.kind === 'reasoning' && this.last;
+  }
+
+  // 思考行的 markdown 选项：字号与配色压到次级（浅/深各自给显式色，理由见 MessageRow.mdOptions）。
+  // 生成中（活动组）不截断 —— 思考期间要能看全；该组结束后回到 6 行预览 + 「展开全文」。
+  private mdReasoning(expanded: boolean): MarkdownOptions {
+    const lightInk: ResourceColor = '#666666';
+    const darkInk: ResourceColor = '#B3B3B3';
+    const size: number = UiTokens.fsCaption;
+    const l1: MarkdownFontStyle = { fontSize: size + 2, fontColor: lightInk, fontWeight: FontWeight.Bold };
+    const d1: MarkdownFontStyle = { fontSize: size + 2, fontColor: darkInk, fontWeight: FontWeight.Bold };
+    const light: MarkdownTheme = {
+      themeColor: lightInk,
+      paragraphStyle: { fontSize: size, fontColor: lightInk },
+      headingStyle: [l1, l1, l1],
+      linkColor: this.theme.accent,
+      code: { backgroundColor: '#1C1917', fontSize: size - 1, borderRadius: 10 },
+      codeSpan: { backgroundColor: '#EEEAE2', borderRadius: 4 },
+      blockQuoteStyle: { backgroundColor: '#F1F3F5', driveColor: '#999999', driveWidth: 3 },
+      hrStyle: { driveColor: '#E4DDD4' }
+    };
+    const dark: MarkdownTheme = {
+      themeColor: darkInk,
+      paragraphStyle: { fontSize: size, fontColor: darkInk },
+      headingStyle: [d1, d1, d1],
+      linkColor: this.theme.accentDark,
+      code: { backgroundColor: '#1C1917', fontSize: size - 1, borderRadius: 10 },
+      codeSpan: { backgroundColor: '#2A2723', borderRadius: 4 },
+      blockQuoteStyle: { backgroundColor: '#2A2723', driveColor: '#8A8A8A', driveWidth: 3 },
+      hrStyle: { driveColor: '#37332E' }
+    };
+    const opts: MarkdownOptions = { theme: light, darkTheme: dark, darkMode: this.isDark };
+    if (!expanded) {
+      opts.maxLines = 6;
+    }
+    return opts;
   }
 
   private text(): string {
@@ -1041,28 +1563,72 @@ struct ProcessRow {
     }
   }
 
+  // 行内容：工具行 = 参数/输出详情（默认收起）；思考行 = markdown 正文。
+  // 思考正文套一层带左竖线的块（对齐 console：SDK OperateCard 的 LineBody = 左侧 1px 竖线 +
+  // 内容内缩），灰底由外层卡片承载。
+  @Builder
+  ProcessContent() {
+    if (this.message.kind === 'tool') {
+      // 默认收起：展开态才渲染参数 / 输出两块详情（对齐 console 的工具卡，收起时不留大段正文）
+      if (this.detailExpanded) {
+        this.ToolDetailBlock('input')
+        this.ToolDetailBlock('output')
+      }
+      if (this.detailCollapsible()) {
+        Text(this.detailExpanded ? $r('app.string.chat_tool_collapse') : $r('app.string.chat_tool_view_full'))
+          .fontSize(UiTokens.fsCaption)
+          .fontColor(this.isDark ? this.theme.accentDark : this.theme.accent)
+          .margin({ top: 4 })
+      }
+    } else {
+      // 思考行：与 console 一致走 markdown 渲染（console 的 HostMessage 对任何 content 的
+      // text 项都用 DeferredMarkdown），不再把思考内容当生硬纯文本；配色压到次级灰。
+      // 生成中不截断（思考期间展示全部），结束后回到 6 行 + 「展开全文」。
+      // 内容走节流副本（见 MD_THROTTLE_MS）：思考过程逐分片刷进来时不重起解析任务。
+      Column() {
+        Markdown({ content: this.mdShown, options: this.renderReasoningOptions(this.detailExpanded || this.generating) })
+          .width('100%')
+      }
+      .width('100%')
+      .padding({ left: 16 })
+      .border({ width: { left: 1 }, color: $r('app.color.line') })
+      .margin({ top: 6 })
+      if (this.textCollapsible() && !this.generating) {
+        Text(this.detailExpanded ? $r('app.string.chat_answer_collapse') : $r('app.string.chat_answer_expand'))
+          .fontSize(UiTokens.fsCaption)
+          .fontColor(this.isDark ? this.theme.accentDark : this.theme.accent)
+          .margin({ top: 4 })
+          .onClick((): void => {
+            this.detailExpanded = !this.detailExpanded;
+          })
+      }
+    }
+  }
+
   build() {
     Row() {
-      Image($r('app.media.circle_check'))
-        .width(15).height(15)
-        .fillColor(this.accentColor())
-        .margin({ right: 8 })
+      // 行首图标槽：调用中转圈，其余按状态给图标（转圈与图标同一位置交替，不额外占位）
+      if (this.running()) {
+        LoadingProgress()
+          .width(15).height(15)
+          .color(this.accentColor())
+          .margin({ right: 8 })
+      } else {
+        Image(this.leadIcon())
+          .width(15).height(15)
+          .fillColor(this.leadIconColor())
+          .margin({ right: 8 })
+      }
       Column() {
         Row() {
-          Text(this.title())
+          Text(this.leadTitle())
             .fontSize(UiTokens.fsSecondary)
             .fontColor($r('app.color.text_secondary'))
             .fontWeight(FontWeight.Medium)
             .layoutWeight(1)
-          if (this.message.kind === 'tool') {
+          // 调用中不叠状态标签（对齐 console：isLoading 时不显示 badges，加载态由转圈 + 「处理中...」表达）
+          if (this.message.kind === 'tool' && !this.running()) {
             Row({ space: 4 }) {
-              if (this.running()) {
-                // 进行中：转圈（LoadingProgress，官方 API 8+，color 设前景色）
-                LoadingProgress()
-                  .width(14)
-                  .height(14)
-                  .color(this.accentColor())
-              }
               Text(this.stateLabel())
                 .fontSize(UiTokens.fsCaption)
                 .fontColor(this.stateColor())
@@ -1075,42 +1641,18 @@ struct ProcessRow {
         }
         .width('100%')
         .alignItems(VerticalAlign.Center)
-        if (this.message.kind === 'tool') {
-          // 默认收起：展开态才渲染参数 / 输出两块详情（对齐 console 的工具卡，收起时不留大段正文）
-          if (this.detailExpanded) {
-            this.ToolDetailBlock('input')
-            this.ToolDetailBlock('output')
-          }
-          if (this.detailCollapsible()) {
-            Text(this.detailExpanded ? $r('app.string.chat_tool_collapse') : $r('app.string.chat_tool_view_full'))
-              .fontSize(UiTokens.fsCaption)
-              .fontColor(this.isDark ? this.theme.accentDark : this.theme.accent)
-              .margin({ top: 4 })
-          }
-        } else {
-          Text(this.text())
-            .fontSize(UiTokens.fsCaption)
-            .fontColor($r('app.color.text_secondary'))
-            .lineHeight(18)
-            .wordBreak(WordBreak.BREAK_ALL)
-            .maxLines(this.detailExpanded ? NO_LINE_LIMIT : 6)
-            .textOverflow({ overflow: TextOverflow.Ellipsis })
-          if (this.textCollapsible()) {
-            Text(this.detailExpanded ? $r('app.string.chat_answer_collapse') : $r('app.string.chat_answer_expand'))
-              .fontSize(UiTokens.fsCaption)
-              .fontColor(this.isDark ? this.theme.accentDark : this.theme.accent)
-              .margin({ top: 4 })
-              .onClick((): void => {
-                this.detailExpanded = !this.detailExpanded;
-              })
-          }
-        }
+        this.ProcessContent()
       }
       .alignItems(HorizontalAlign.Start)
       .layoutWeight(1)
     }
     .width('100%')
-    .padding({ top: 10, bottom: 10 })
+    // 思考行整体套灰底卡片（对齐 console：OperateCard 展开态 = colorFillTertiary 灰底 + 大圆角），
+    // 与工具行（无底色）区分开，一眼能看出"这段是模型在思考"
+    .padding(this.thinking() ? { left: 12, right: 12, top: 8, bottom: 8 } : { top: 10, bottom: 10 })
+    .borderRadius(this.thinking() ? 10 : 0)
+    .backgroundColor(this.thinking() ? $r('app.color.card_bg') : Color.Transparent)
+    .margin({ top: this.thinking() ? 6 : 0 })
     // 工具行：点整行展开/收起参数与输出（详情块默认收起，切换必须挂在这一层；
     // 此前只画出开关文案、没挂点击，点了没有任何反应）
     .onClick((): void => {
@@ -1122,12 +1664,11 @@ struct ProcessRow {
 }
 
 // ============ 行分发器 ============
-// 一个 ConversationRow → 一个 ListItem 的子树。挂载在 ListItem 内；页面把除末行外的行放进
-// ForEach（键稳定 ⇒ 不重建），末行直接构造本组件（每帧经 @Prop 拿到新行 ⇒ 按常规更新路径刷新，
-// 不重建子树，展开 / 选择态不被打断）。
+// 一个 ConversationRow → 一个 ListItem 的子树。行数据经 @ObjectLink 接收：流式期间页面把新数据
+// 赋到同一行对象上，本组件原地重渲染（ForEach 键不变 ⇒ 不重建子树，不闪、不打断滚动与展开态）。
 @Component
 export struct ChatRow {
-  @Prop row: ConversationRow = EMPTY_ROW;
+  @ObjectLink row: ConversationRow;
   @Prop isDark: boolean = false;
   @Prop theme: ThemeSnapshot = ThemeManager.get().snapshot();
   @Prop baseUrl: string = '';
@@ -1141,10 +1682,13 @@ export struct ChatRow {
           message: this.row.messages[0], isDark: this.isDark, theme: this.theme, baseUrl: this.baseUrl
         })
       } else if (this.row.kind === 'message') {
-        MessageRow({
-          message: this.row.messages[0], last: this.row.last, isDark: this.isDark,
-          theme: this.theme, baseUrl: this.baseUrl
-        })
+        // 空内容的消息行不出卡（数据层已过滤，这里再兜一层：卡底色在深色下会把空行显成一张空白卡）
+        if (rowHasVisibleContent(this.row.messages[0])) {
+          MessageRow({
+            message: this.row.messages[0], streaming: this.row.pending, last: this.row.last,
+            isDark: this.isDark, theme: this.theme, baseUrl: this.baseUrl
+          })
+        }
       } else if (this.row.kind === 'stepsHeader') {
         ProcessHeader({
           process: this.row.messages, isDark: this.isDark, theme: this.theme,
@@ -1157,7 +1701,8 @@ export struct ChatRow {
       } else if (this.row.kind === 'proc') {
         ProcessRow({
           message: this.row.messages[0], isDark: this.isDark, theme: this.theme,
-          generating: this.row.generating
+          generating: this.row.generating,
+          last: this.row.last
         })
       } else if (this.row.kind === 'media') {
         MediaRow({ parts: this.row.parts, baseUrl: this.baseUrl })

@@ -30,6 +30,10 @@ export class UiTokens {
   // 故消息列表与 composer 上方的审批卡/待发附件/错误行都要按此留白，否则会被胶囊压住
   // （真机实测：胶囊顶 y2489px，屏幕底 2832px → 需 104vp，取 108vp 留呼吸）
   static readonly chatComposerInset: number = 108;
+  // 消息列表末尾留白：除悬浮输入胶囊外，还要让出浮在胶囊**之上**的会话运行状态条（模型/循环/审批
+  // 三枚芯片），否则滚到底时最后一行（例如回合末的文件清单卡）会被状态条压住
+  //（真机实测：芯片带 y2482..2559px，末行下沿 2598px → 被盖住）
+  static readonly chatListEndInset: number = 142;
   // 悬浮输入胶囊本体高度 = 内边距 8×2 + 控件 42（显式给高，视效组件按百分比取高时依赖父容器确定尺寸）
   static readonly chatComposerHeight: number = 58;
   // 悬浮页签栏内容区高（实测栏体 203px → 内容区 175px = 58 - 栏体自身 8vp 留白）

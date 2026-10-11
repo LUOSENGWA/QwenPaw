@@ -5,6 +5,7 @@
  */
 
 import { HdsNavDestination, ScrollEffectType, BlurStrategy, hdsMaterial } from '@kit.UIDesignKit';
+import { BP_LG, areaWidthOf, wideClampW } from '../theme/Breakpoints';
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
 import { WorkbenchModule, findWorkbenchModule } from '../services/WorkbenchModules';
 import { ModuleOffload } from '../components/ModuleOffload';
@@ -30,7 +31,8 @@ import { ModuleExtensions } from '../components/ModuleExtensions';
 import { ModuleHub } from '../components/ModuleHub';
 import { ThemeManager, ThemeSnapshot } from '../theme/ThemeManager';
 import { UiTokens } from '../theme/UiTokens';
-import { LengthMetrics } from '@kit.ArkUI';
+
+import { popSelfOnBack, slideCoverTransition } from '../services/NavPush';
 
 @Builder
 export function ModulePageBuilder(_name: string, param: Object) {
@@ -44,6 +46,29 @@ export struct ModulePage {
   @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
   @State isDark: boolean = false;
 
+  // 大屏（平板/电脑）内容列限宽：官方《页面布局场景》缩进布局 —— 空间充足时内容列居中、两侧留白；
+  // 宽度由外层满宽容器 onAreaChange 实时上报（跟随窗口缩放），实现见 theme/Breakpoints
+  @State pageW: number = 0;
+  // 可见区高度：判断"横排"用（模块内某些交互按横竖屏分流，如文件页的树形呈现）
+  @State pageH: number = 0;
+
+  private onPageArea = (_old: Area, now: Area): void => {
+    this.pageW = areaWidthOf(now, this.pageW);
+    const h: number = typeof now.height === 'number' ? now.height as number : 0;
+    if (h > 0 && Math.abs(h - this.pageH) > 0.5) {
+      this.pageH = h;
+    }
+  };
+
+  // 宽屏横排（平板/电脑横屏）：与分栏、内容列限宽同一口径（宽 ≥ lg 且横排）
+  private wideLandscape(): boolean {
+    return this.pageW >= BP_LG && this.pageW > this.pageH;
+  }
+
+  // 导航栈（onReady 时由框架注入）：标题栏返回按钮与系统侧滑都走它出栈
+  private stack: NavPathStack | null = null;
+  // 二级页水平覆盖转场的位移（百分比）：由 NavPush.slideCoverTransition 驱动
+  @State pageX: string = '0%';
   aboutToAppear(): void {
     const rec: Record<string, Object> = this.params as Record<string, Object>;
     const key: Object = rec['key'];
@@ -59,94 +84,119 @@ export struct ModulePage {
 
   build() {
     HdsNavDestination() {
-      Scroll() {
-        Column() {
-          if (this.module !== null) {
-            Row() {
-              Image(this.module!.icon)
-                .width(26).height(26)
-                .fillColor(this.isDark ? this.theme.accentDark : this.theme.accent)
-                .margin({ right: 8 })
-              Column() {
-                Text(this.module!.title)
-                  .fontSize(20)
-                  .fontWeight(FontWeight.Bold)
-                Text(this.module!.subtitle)
-                  .fontSize(UiTokens.fsSecondary)
-                  .fontColor($r('app.color.text_tertiary'))
-                  .margin({ top: 2 })
+      Row() {
+        Scroll() {
+          Column() {
+            if (this.module !== null) {
+              Row() {
+                Image(this.module!.icon)
+                  .width(26).height(26)
+                  .fillColor(this.isDark ? this.theme.accentDark : this.theme.accent)
+                  .margin({ right: 8 })
+                Column() {
+                  Text(this.module!.title)
+                    .fontSize(20)
+                    .fontWeight(FontWeight.Bold)
+                  Text(this.module!.subtitle)
+                    .fontSize(UiTokens.fsSecondary)
+                    .fontColor($r('app.color.text_tertiary'))
+                    .margin({ top: 2 })
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
               }
-              .alignItems(HorizontalAlign.Start)
-              .layoutWeight(1)
-            }
-            .width('100%')
-            .margin({ top: 16, bottom: 14 })
+              .width('100%')
+              .margin({ top: 16, bottom: 14 })
 
-            if (this.module!.key === 'offload') {
-              ModuleOffload()
-            } else if (this.module!.key === 'acp') {
-              ModuleAcp()
-            } else if (this.module!.key === 'agent-config') {
-              ModuleAgentConfig()
-            } else if (this.module!.key === 'automation') {
-              ModuleAutomation()
-            } else if (this.module!.key === 'channels') {
-              ModuleChannels()
-            } else if (this.module!.key === 'checkpoints') {
-              ModuleCheckpoints()
-            } else if (this.module!.key === 'debug') {
-              ModuleDebug()
-            } else if (this.module!.key === 'files') {
-              ModuleFiles()
-            } else if (this.module!.key === 'projects-git') {
-              ModuleProjectGit()
-            } else if (this.module!.key === 'tools') {
-              ModuleTools()
-            } else if (this.module!.key === 'voice') {
-              ModuleVoice()
-            } else if (this.module!.key === 'skills') {
-              ModuleSkills()
-            } else if (this.module!.key === 'skill-pool') {
-              ModuleSkillPool()
-            } else if (this.module!.key === 'mcp-acp') {
-              ModuleMcpAcp()
-            } else if (this.module!.key === 'environments') {
-              ModuleEnvironments()
-            } else if (this.module!.key === 'security') {
-              ModuleSecurity()
-            } else if (this.module!.key === 'operations') {
-              ModuleOperations()
-            } else if (this.module!.key === 'models') {
-              ModuleModels()
-            } else if (this.module!.key === 'extensions') {
-              ModuleExtensions()
-            } else if (this.module!.key === 'hub') {
-              ModuleHub()
-            } else {
-              // 尚未逐个移植设置项的模块：直接用该模块端点取真实数据（对齐 7378 SnapshotSettings）。
-              // sessions 亦走此处：7378 该模块本身就是 /chats?archived=false 的通用视图。
-              ModuleSnapshot({
-                endpoint: this.module!.endpoint,
-                icon: this.module!.icon
-              })
+              if (this.module!.key === 'offload') {
+                ModuleOffload()
+              } else if (this.module!.key === 'acp') {
+                ModuleAcp()
+              } else if (this.module!.key === 'agent-config') {
+                ModuleAgentConfig()
+              } else if (this.module!.key === 'automation') {
+                ModuleAutomation()
+              } else if (this.module!.key === 'channels') {
+                ModuleChannels()
+              } else if (this.module!.key === 'checkpoints') {
+                ModuleCheckpoints()
+              } else if (this.module!.key === 'debug') {
+                ModuleDebug()
+              } else if (this.module!.key === 'files') {
+                ModuleFiles({ wide: this.wideLandscape() })
+              } else if (this.module!.key === 'projects-git') {
+                ModuleProjectGit()
+              } else if (this.module!.key === 'tools') {
+                ModuleTools()
+              } else if (this.module!.key === 'voice') {
+                ModuleVoice()
+              } else if (this.module!.key === 'skills') {
+                ModuleSkills()
+              } else if (this.module!.key === 'skill-pool') {
+                ModuleSkillPool()
+              } else if (this.module!.key === 'mcp-acp') {
+                ModuleMcpAcp()
+              } else if (this.module!.key === 'environments') {
+                ModuleEnvironments()
+              } else if (this.module!.key === 'security') {
+                ModuleSecurity()
+              } else if (this.module!.key === 'operations') {
+                ModuleOperations()
+              } else if (this.module!.key === 'models') {
+                ModuleModels()
+              } else if (this.module!.key === 'extensions') {
+                ModuleExtensions()
+              } else if (this.module!.key === 'hub') {
+                ModuleHub()
+              } else {
+                // 尚未逐个移植设置项的模块：直接用该模块端点取真实数据（对齐 7378 SnapshotSettings）。
+                // sessions 亦走此处：7378 该模块本身就是 /chats?archived=false 的通用视图。
+                ModuleSnapshot({
+                  endpoint: this.module!.endpoint,
+                  icon: this.module!.icon
+                })
+              }
             }
           }
+          .width('100%')
+          .padding({
+            top: UiTokens.topInset, bottom: 32,
+            left: UiTokens.pageHMargin, right: UiTokens.pageHMargin
+          })
         }
-        .width('100%')
-        .padding({
-          top: UiTokens.topInset, bottom: 32,
-          left: UiTokens.pageHMargin, right: UiTokens.pageHMargin
-        })
+        .width(wideClampW(this.pageW))
+        .height('100%')
+        .scrollBar(BarState.Auto)
+        // 页面底色 + 扩绘制区到状态栏/导航栏：二级页根容器不自带底色时，标题栏以下与下带会露出窗口黑底（真机实测 (0,0,0)）
+        .backgroundColor($r('app.color.page_bg'))
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
       }
+      .width('100%')
       .height('100%')
-      .scrollBar(BarState.Auto)
-      // 页面底色 + 扩绘制区到状态栏/导航栏：二级页根容器不自带底色时，标题栏以下与下带会露出窗口黑底（真机实测 (0,0,0)）
+      .justifyContent(FlexAlign.Center)
+      // 分栏下内容列限宽后两侧会留白：pane 根容器必须自己带页面底色，否则露出窗口默认白底，
+      // 与左栏（页面底色）之间出现一条浅色接缝（真机像素实测：分栏边界处 255,255,255 vs 238,234,225）
       .backgroundColor($r('app.color.page_bg'))
-      .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+      .onAreaChange(this.onPageArea)
     }
     // 内容也扩到安全区外（布局级）：官方 NavDestination.ignoreLayoutSafeArea，
     // 与 expandSafeArea 同时设置时它优先；前置条件要求标题栏隐藏或 STACK 模式
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM], [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM])
+    // 二级页转场：整页自右水平覆盖进来（退出滑回右侧）——见 services/NavPush.slideCoverTransition。
+    // 系统默认档在分栏下动的是"内容区左边缘 0 → 分栏位"，观感从左侧摊过来（判"方向反了"），
+    // 故改用官方 customTransition（NavDestinationTransitionDelegate）自己定方向。
+    .customTransition((op: NavigationOperation, isEnter: boolean)
+      : Array<NavDestinationTransition> | undefined => slideCoverTransition(op, isEnter,
+        (v: string): void => { this.pageX = v; }))
+    .translate({ x: this.pageX })
+    // 本页未从入栈参数带 NavPathStack：按官方口径在 onReady 取导航栈（NavDestinationContext.pathStack）
+    .onReady((ctx: NavDestinationContext): void => {
+      this.stack = ctx.pathStack;
+    })
+    // 返回键：系统侧滑与标题栏左上角返回按钮都投递到当前 NavDestination 的 onBackPressed
+    //（官方 FAQ faqs-arkui-1117：该回调"支持拦截系统侧滑及 NavDestination 标题栏的返回事件"）；
+    // 没挂它时标题栏返回按钮点了没有反应 —— 这里自己出栈并消费。
+    .onBackPressed((): boolean => popSelfOnBack(this.stack))
     .titleBar({
       // 二级页各自配标题栏（含返回图标区）：静止态即磨砂 + 系统转场动画。
       // 不开 systemMaterialEffect：官方《组件适配沉浸光感》称返回键在标题栏材质生效范围内，
@@ -201,12 +251,4 @@ export struct ModulePage {
     })
   }
 
-  private t(res: Resource): string {
-    try {
-      const host: common.Context = this.getUIContext().getHostContext() as common.Context;
-      return host.resourceManager.getStringSync(res.id);
-    } catch (e) {
-      return '';
-    }
-  }
 }

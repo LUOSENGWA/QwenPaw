@@ -11,17 +11,18 @@ import { GlassCard } from './GlassCard';
 import { SegmentedControl } from './SegmentedControl';
 import { SheetGate, moduleSheetOptions } from './SheetGate';
 import { WorkspaceBadge } from './WorkspaceSwitcher';
-import { http } from '@kit.NetworkKit';
+
 import { emitter } from '@kit.BasicServicesKit';
-import { QpConnection, loadConnection, saveConnection, clearConnection } from '../services/ConnectionStore';
+import { QpConnection, loadConnection, saveConnection } from '../services/ConnectionStore';
+import { swapRoute, topRouteIs } from '../services/NavPush';
 import {
   ChatActivityRecord, loadActivity, saveActivity, reconcileActivity, markActivityRead, resolveActivity
 } from '../services/ChatActivity';
 import {
-  connectToQwenPaw, describeConnectError, verifyConnection, ConnectOutcome, doRequest
+  connectToQwenPaw, describeConnectError, verifyConnection, ConnectOutcome
 } from '../services/ConnectionService';
 import { parsePairingUri, parseManualInput } from '../services/PairingModel';
-import { ScanRouteParam, CHAT_PLACEHOLDER_ROUTE } from '../services/AppEvents';
+import { ScanRouteParam } from '../services/AppEvents';
 import {
   fetchChats, ChatInfo, relativeTime, renameChat, ChatGroup, fetchChatGroups,
   createChatGroup, renameChatGroup, deleteChatGroup, moveChatToGroup, createChat,
@@ -30,7 +31,7 @@ import {
 import { ChatRouteParam, CHAT_CLOSED_EVENT } from '../services/ChatDetailService';
 import { LastChat, saveLastChat, loadLastChat, clearLastChat } from '../services/LastChat';
 import { AGENT_CHANGE_EVENT } from '../services/AgentsService';
-import { CONN_CHANGE_EVENT, CONN_STORE_EVENT } from './WorkbenchTab';
+import { CONN_STORE_EVENT } from '../services/AppEvents';
 import { ThemeManager, ThemeSnapshot, ThemeListener } from '../theme/ThemeManager';
 import { UiTokens } from '../theme/UiTokens';
 import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
@@ -49,7 +50,6 @@ export struct ConnectPanel {
   @State connected: boolean = false;
   @State connecting: boolean = false;
   @State statusText: string = '';
-  @State statusColor: ResourceColor = $r('app.color.status_idle');
   @State errorMsg: string = '';
   @State baseUrlInput: string = '';
   @State ticketInput: string = '';
@@ -75,6 +75,9 @@ export struct ConnectPanel {
   @Prop query: string = '';
   // 当前前台底部页签（0=会话）：会话列表只在会话页处于前台时轮询（对齐 7378 useFocusEffect 作用域）
   @Prop @Watch('onTabActive') activeTab: number = 0;
+  // 窗宽 ≥ 断点 lg 且横排（= 会走分栏的形态）：由 Index 依据根容器实测尺寸传入。
+  // 用于「切回会话页恢复上次会话」的形态判定（仅平板/电脑横屏需要）
+  @Prop @Watch('onWideLandscapeChanged') wideLandscape: boolean = false;
   @State creating: boolean = false;
   // 会话分组（对齐 RN features/chats/grouping.ts + chats.tsx）
   @State groups: ChatGroup[] = [];
@@ -104,11 +107,6 @@ export struct ConnectPanel {
     this.inboxShown = true;
   }
 
-  private closeInboxSheet(): void {
-    this.inboxGate.beginClose();
-    this.inboxShown = false;
-  }
-
   @State modalKind: string = '';     // rename / groupNew / groupRename / move
   @State modalText: string = '';
   @State modalChatId: string = '';
@@ -129,17 +127,39 @@ export struct ConnectPanel {
   private themeListener: ThemeListener | null = null;
   private agentListener: (data: emitter.EventData) => void = (_data: emitter.EventData): void => {};
   private chatClosedListener: (data: emitter.EventData) => void = (_data: emitter.EventData): void => {
-    // 从会话详情返回：列表重载（最新消息排序/摘要跟随）
+    // 从会话详情返回：只做静默对齐（最新消息排序/摘要/新卡片跟随），不重放展开补间。
+    // 此前这里走 loadChats（整列表淡入 + 下移），于是每次退出会话，列表都要"刷一下"。
     if (!this.connected) {
       return;
     }
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
     loadConnection(ctx).then((conn: QpConnection | null) => {
       if (conn !== null) {
-        this.loadChats(conn);
+        this.conn = conn;
+        this.pollRefreshChats();
       }
     });
   };
+
+  // 列表内容落地：静默替换；只有"确有新卡片到场"时才重放一次展开补间
+  //（返回会话页不该整列表刷一下——新卡片才显示刷新动画）。
+  private applyChats(list: ChatInfo[], animateNew: boolean): void {
+    const prev: string[] = this.chats.map((c: ChatInfo): string => c.id);
+    let fresh: boolean = false;
+    if (animateNew) {
+      for (const c of list) {
+        if (prev.indexOf(c.id) < 0) {
+          fresh = true;
+          break;
+        }
+      }
+    }
+    this.chats = list;
+    if (fresh) {
+      this.listRevealed = false;
+      this.revealList();
+    }
+  }
 
   // 连接存储在别处被改写（设置页切换/移除/断开/重连）：重取当前连接并复核
   private connStoreListener: (data: emitter.EventData) => void = (_data: emitter.EventData): void => {
@@ -166,6 +186,9 @@ export struct ConnectPanel {
 
   // 扫码配对页（路由 scan）：配对成功后由该页落盘连接，回到本页用 onPop 刷新
   private openScan(): void {
+    if (topRouteIs(this.navStack, 'scan')) {
+      return;
+    }
     const param: ScanRouteParam = { stack: this.navStack };
     this.navStack.pushPathByName('scan', param, (_info: PopInfo): void => {
       this.reloadAfterSwitch();
@@ -180,7 +203,6 @@ export struct ConnectPanel {
     this.connecting = true;
     this.errorMsg = '';
     this.statusText = this.t($r('app.string.cp_status_connecting'));
-    this.statusColor = $r('app.color.status_warning');
     try {
       const outcome: ConnectOutcome = await verifyConnection(conn);
       this.applyOutcome(outcome);
@@ -188,7 +210,6 @@ export struct ConnectPanel {
       const err: Error = e as Error;
       this.connected = false;
       this.statusText = this.t($r('app.string.cp_status_failed'));
-      this.statusColor = $r('app.color.status_error');
       this.errorMsg = describeConnectError(conn.baseUrl, err);
     } finally {
       this.connecting = false;
@@ -198,16 +219,14 @@ export struct ConnectPanel {
   // 连接成功后的统一收口（手输/扫码配对与已落盘复核共用）
   private applyOutcome(outcome: ConnectOutcome): void {
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    saveConnection(ctx, outcome.connection).then((): void => {
-      emitter.emit(CONN_CHANGE_EVENT);
-    });
+    // 连接变化广播由 ConnectionStore 统一发出（保存即广播），这里不再重复发一条
+    saveConnection(ctx, outcome.connection);
     this.connected = true;
     this.connUser = outcome.connection.username;
     this.agentNames = outcome.agentNames;
     this.agentIds = outcome.agentIds;
     this.statusText =
       `${this.t($r('app.string.cp_status_connected'))} · ${outcome.agentCount}${this.t($r('app.string.cp_agents_unit'))}`;
-    this.statusColor = $r('app.color.status_success');
     this.loadChats(outcome.connection);
   }
 
@@ -271,12 +290,6 @@ export struct ConnectPanel {
     pressTouch(this.getUIContext(), e, this.btnLatch, (v: boolean): void => {
       this.pressedBtn = v ? idx : -1;
     });
-  }
-
-  // 会话 / 已归档 视图切换（对齐 RN chats.tsx 的 showArchived）。
-  // 滑块动画与跟手拖动都在共用组件 components/SegmentedControl.ets 内，这里只管视图数据。
-  private toggleArchived(): void {
-    this.setArchived(!this.showArchived);
   }
 
   private setArchived(want: boolean): void {
@@ -356,10 +369,21 @@ export struct ConnectPanel {
   private onTabActive(): void {
     if (this.activeTab === 0) {
       this.startChatPoll();
-      // 从别的页面切回来：恢复上次打开的会话（本页没有已打开会话时）
-      this.maybeReopenLastChat();
+      // 从别的页面切回来：恢复上次打开的会话（本页没有已打开会话时）。
+      // 只在"平板/电脑横屏（分栏）"下做——那时右栏空着，恢复上次会话才有意义；
+      // 竖屏/手机是整页推入式，切回列表就该停在列表。
+      if (this.wideLandscape) {
+        this.maybeReopenLastChat();
+      }
     } else {
       this.stopChatPoll();
+    }
+  }
+
+  // 横竖屏切换：转为宽屏横排（分栏出现、右栏空着）时同样补一次恢复
+  private onWideLandscapeChanged(): void {
+    if (this.wideLandscape && this.activeTab === 0) {
+      this.maybeReopenLastChat();
     }
   }
 
@@ -387,7 +411,7 @@ export struct ConnectPanel {
     this.chatPollBusy = true;
     const conn: QpConnection = this.conn;
     try {
-      this.chats = await fetchChats(conn.baseUrl, conn.token, conn.agentId, this.showArchived);
+      this.applyChats(await fetchChats(conn.baseUrl, conn.token, conn.agentId, this.showArchived), true);
       await this.syncActivity();
     } catch (e) {
       // 静默刷新失败保留原列表
@@ -772,6 +796,10 @@ export struct ConnectPanel {
 
   build() {
     Column() {
+      // 搜索态只留结果：标题 + 工作区徽章 + 审批 Inbox 三块合计约 800px，键盘弹起时会把列表挤到
+      // 只剩一条（实测窗口被压到 1061px、列表区不足 120px → "搜了看不到结果"）。搜索时收起这三块，
+      // 列表直接落在搜索条下方，结果一目了然（清空搜索即恢复）
+      if (!this.filtering()) {
       Text($r('app.string.cp_title'))
         .fontSize(UiTokens.fsTitle)
         .fontWeight(FontWeight.Bold)
@@ -825,6 +853,7 @@ export struct ConnectPanel {
           (v: boolean): void => {
             this.inboxShown = v;
           }))
+      }
 
       if (this.connected) {
         Column() {
@@ -994,6 +1023,22 @@ export struct ConnectPanel {
         .width('100%')
         .justifyContent(FlexAlign.Center)
         .padding({ top: 48, bottom: 48 })
+      } else if (this.filtering() && this.visibleChats().length === 0) {
+        // 搜索无命中：与"空列表"分开给文案（对齐 7378 chats.tsx 的 filtered 空态）。
+        // 两个约束：① 不套带 padding 的居中 Column、② 上下留白合计压到 ~40vp —— 键盘弹起时
+        // 列表页会被压缩（Resize 避让），这是列表最后一个区块，留白大了文字行高会被挤没（实测只剩 4px）
+        Text($r('app.string.chats_search_empty_title'))
+          .fontSize(UiTokens.fsBody)
+          .fontColor($r('app.color.text_secondary'))
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .margin({ top: 16 })
+        Text($r('app.string.chats_search_empty_hint'))
+          .fontSize(UiTokens.fsCaption)
+          .fontColor($r('app.color.text_tertiary'))
+          .width('100%')
+          .textAlign(TextAlign.Center)
+          .margin({ top: 4, bottom: 16 })
       } else if (this.chats.length === 0) {
         // 归档视图的空态与在阅视图区分（对齐 7378：空归档不是"没有会话"）
         Text(this.showArchived
@@ -1003,7 +1048,7 @@ export struct ConnectPanel {
           .margin({ top: UiTokens.cardVGap })
       } else {
         ForEach(buildChatSections(this.visibleChats(), this.groups,
-          (c: ChatInfo): string => this.activityOf(c)), (sec: ChatSection) => {
+          (c: ChatInfo): string => this.activityOf(c), this.filtering()), (sec: ChatSection) => {
           this.sectionBlock(sec)
         }, (sec: ChatSection) => this.sectionKeyOf(sec))
       }
@@ -1117,7 +1162,6 @@ export struct ConnectPanel {
 
       this.connecting = true;
       this.statusText = this.t($r('app.string.cp_status_connecting'));
-      this.statusColor = $r('app.color.status_warning');
 
       const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
       const stored: QpConnection | null = await loadConnection(ctx);
@@ -1129,26 +1173,10 @@ export struct ConnectPanel {
       const err: Error = e as Error;
       this.connected = false;
       this.statusText = this.t($r('app.string.cp_status_failed'));
-      this.statusColor = $r('app.color.status_error');
       this.errorMsg = describeConnectError(rawUrl, err);
     } finally {
       this.connecting = false;
     }
-  }
-
-  private doDisconnect(): void {
-    const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
-    clearConnection(ctx).then(() => {
-      this.connected = false;
-      this.connUser = '';
-      this.agentNames = [];
-      this.agentIds = [];
-      this.chats = [];
-      this.query = '';
-      this.statusText = this.t($r('app.string.cp_status_disconnected'));
-      this.statusColor = $r('app.color.status_idle');
-      emitter.emit(CONN_CHANGE_EVENT);
-    });
   }
 
   // 新建会话（对齐 7378 chats.tsx create()）：POST /chats → 列表前置 → 直接进详情页
@@ -1182,7 +1210,8 @@ export struct ConnectPanel {
       chatId: chat.id, chatName: chat.name, sessionId: chat.sessionId, userId: chat.userId
     };
     this.rememberLastChat(chat);
-    this.navStack.pushPath({ name: 'chat', param: param });
+    // 会话页始终只留一份：分栏下点另一个会话 = 换窗口（旧页销毁，返回直接回空态）
+    swapRoute(this.navStack, 'chat', param);
   }
 
   // 记忆「最后打开的会话」（按连接 + 智能体）：四项都要存 —— sessionId 用于发送/重连定位，
@@ -1206,11 +1235,8 @@ export struct ConnectPanel {
     if (conn === null || this.chats.length === 0) {
       return;
     }
-    // 分栏右栏的占位页不算"打开了会话"：栈里只有它时照常恢复上次的会话
-    const names: string[] = this.navStack.getAllPathName();
-    const chatOpen: boolean = names.length > 0
-      && !(names.length === 1 && names[0] === CHAT_PLACEHOLDER_ROUTE);
-    if (chatOpen) {
+    // 栈非空即"已打开了会话"（分栏右栏空态由 HdsNavigation.splitPlaceholder 承担，不进栈）
+    if (this.navStack.getAllPathName().length > 0) {
       return;
     }
     const ctx: common.UIAbilityContext = getContext(this) as common.UIAbilityContext;
@@ -1227,7 +1253,9 @@ export struct ConnectPanel {
     await clearLastChat(ctx, conn.baseUrl, conn.agentId);
   }
 
-  // 搜索过滤（对齐 7378：按名称不区分大小写包含）
+  // 搜索过滤（对齐 7378 chats.tsx：名称不区分大小写包含）。在此基础上多匹配一层「分组名」：
+  // 会话页的检索面本来就只有名称，而同工程的工作台搜索是「标题+副标题+关键词+范围」多字段匹配，
+  // 用分组名一起匹配才能靠关键词把某组会话一次捞出来（如按分组名搜出该组全部会话）。
   private visibleChats(): ChatInfo[] {
     const q: string = this.query.trim().toLowerCase();
     if (q.length === 0) {
@@ -1235,11 +1263,31 @@ export struct ConnectPanel {
     }
     const out: ChatInfo[] = [];
     for (const c of this.chats) {
-      if (c.name.toLowerCase().indexOf(q) >= 0) {
+      if (c.name.toLowerCase().indexOf(q) >= 0
+        || this.groupTitleOfId(c.groupId).toLowerCase().indexOf(q) >= 0) {
         out.push(c);
       }
     }
     return out;
+  }
+
+  // 会话所属分组的显示名（未分组/未知分组返回空串，不参与匹配）
+  private groupTitleOfId(groupId: string): string {
+    if (groupId.length === 0) {
+      return '';
+    }
+    for (const g of this.groups) {
+      if (g.id === groupId) {
+        const ti: ResourceStr = groupTitleOf(g);
+        return typeof ti === 'string' ? ti as string : this.t(ti as Resource);
+      }
+    }
+    return '';
+  }
+
+  // 是否处于搜索态（决定空分组是否隐藏、是否显示"没有匹配"）
+  private filtering(): boolean {
+    return this.query.trim().length > 0;
   }
 
   private doScan(): void {
@@ -1387,8 +1435,6 @@ function groupTitleOf(g: ChatGroup): ResourceStr {
   return g.name;
 }
 
-
-
 interface IndexedChat {
   chat: ChatInfo;
   index: number;
@@ -1430,8 +1476,10 @@ function sameBaseUrl(a: string, b: string): boolean {
   return na.length > 0 && na === nb;
 }
 
+// filtering = 搜索态：搜索时分组只剩「命中的那些」，空分组与"无会话"占位不再列出
+//（否则搜出来一屏的分组标题与空提示，命中项反而被挤散）。
 function buildChatSections(chats: ChatInfo[], groups: ChatGroup[],
-  activityOf: (c: ChatInfo) => string): ChatSection[] {
+  activityOf: (c: ChatInfo) => string, filtering: boolean): ChatSection[] {
   const pinned: ChatInfo[] = chats.filter((c: ChatInfo): boolean => c.pinned);
   const remaining: ChatInfo[] = chats.filter((c: ChatInfo): boolean => !c.pinned);
   const sections: ChatSection[] = [];
@@ -1452,11 +1500,13 @@ function buildChatSections(chats: ChatInfo[], groups: ChatGroup[],
     const data: ChatInfo[] = sortChatsByAttention(remaining.filter((c: ChatInfo): boolean =>
       g.kind === 'default' ? (c.groupId.length === 0 || c.groupId === g.id) : c.groupId === g.id),
       activityOf);
-    sections.push({ key: g.id, title: groupTitleOf(g), chats: data, pinned: false, group: g });
+    if (data.length > 0 || !filtering) {
+      sections.push({ key: g.id, title: groupTitleOf(g), chats: data, pinned: false, group: g });
+    }
   }
   const ungrouped: ChatInfo[] = remaining.filter((c: ChatInfo): boolean =>
     (c.groupId.length === 0 && !hasDefault) || (c.groupId.length > 0 && knownIds.indexOf(c.groupId) < 0));
-  if (ungrouped.length > 0 || !hasDefault) {
+  if (ungrouped.length > 0 || (!hasDefault && !filtering)) {
     sections.push({
       key: 'ungrouped', title: $r('app.string.chats_group_ungrouped'),
       chats: sortChatsByAttention(ungrouped, activityOf), pinned: false, group: null

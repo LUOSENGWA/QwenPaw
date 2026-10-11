@@ -24,7 +24,8 @@ import {
 import { ThemeManager, ThemeSnapshot } from '../theme/ThemeManager';
 import { UiTokens } from '../theme/UiTokens';
 import { PRESS_SCALE, PressLatch, pressEffect, pressTouch } from '../theme/PressFx';
-import { LengthMetrics } from '@kit.ArkUI';
+
+import { popSelfOnBack, slideCoverTransition } from '../services/NavPush';
 
 @Builder
 export function PlatformOAuthPageBuilder(_name: string, param: Object) {
@@ -39,7 +40,6 @@ export struct PlatformOAuthPage {
   @State loading: boolean = true;
   @State exchanging: boolean = false;
   @State error: string = '';
-  @State attempt: number = 0;
   @State pressed: number = -1;
   @State isDark: boolean = false;
   @State theme: ThemeSnapshot = ThemeManager.get().snapshot();
@@ -48,6 +48,8 @@ export struct PlatformOAuthPage {
   private oauthState: string = '';
   private settled: boolean = false;
   private stack: NavPathStack | null = null;
+  // 二级页水平覆盖转场的位移（百分比）：由 NavPush.slideCoverTransition 驱动
+  @State pageX: string = '0%';
   private controller: webview.WebviewController = new webview.WebviewController();
   private latch: PressLatch = new PressLatch();
 
@@ -191,6 +193,17 @@ export struct PlatformOAuthPage {
     // 内容扩到安全区外（布局级）：二级页四边都扩，否则底部/左右两侧会露出窗口底色
     .ignoreLayoutSafeArea([LayoutSafeAreaType.SYSTEM],
       [LayoutSafeAreaEdge.TOP, LayoutSafeAreaEdge.BOTTOM, LayoutSafeAreaEdge.START, LayoutSafeAreaEdge.END])
+    // 二级页转场：整页自右水平覆盖进来（退出滑回右侧）——见 services/NavPush.slideCoverTransition。
+    // 系统默认档在分栏下动的是"内容区左边缘 0 → 分栏位"，观感从左侧摊过来（判"方向反了"），
+    // 故改用官方 customTransition（NavDestinationTransitionDelegate）自己定方向。
+    .customTransition((op: NavigationOperation, isEnter: boolean)
+      : Array<NavDestinationTransition> | undefined => slideCoverTransition(op, isEnter,
+        (v: string): void => { this.pageX = v; }))
+    .translate({ x: this.pageX })
+    // 返回键：系统侧滑与标题栏左上角返回按钮都投递到当前 NavDestination 的 onBackPressed
+    //（官方 FAQ faqs-arkui-1117：该回调"支持拦截系统侧滑及 NavDestination 标题栏的返回事件"）；
+    // 没挂它时标题栏返回按钮点了没有反应 —— 这里自己出栈并消费。
+    .onBackPressed((): boolean => popSelfOnBack(this.stack))
     .titleBar({
       style: {
         scrollEffectOpts: {

@@ -50,8 +50,6 @@ export struct IosRow {
   // 无装饰器的成员变量只在构造时赋值，父组件重渲染不会同步（官方状态管理原理：更新以自定义组件为
   // 单位，仅状态变量参与同步），否则会出现"改了值但行上还显示旧值"。
   @Prop showIcon: boolean = true;
-  // 图标是鸿蒙系统符号（如设置齿轮）时走 SymbolGlyph —— media/符号无法从 Resource 判类型，须显式标记
-  @Prop iconSymbol: boolean = false;
   @Prop label: string = '';
   @Prop subtitle: string = '';
   @Prop trailing: string = '';
@@ -78,15 +76,9 @@ export struct IosRow {
       Row() {
         if (this.showIcon) {
           Stack() {
-            if (this.iconSymbol) {
-              SymbolGlyph(this.icon)
-                .fontSize(18)
-                .fontColor([$r('app.color.text_secondary')])
-            } else {
-              Image(this.icon)
-                .width(18).height(18)
-                .fillColor($r('app.color.text_secondary'))
-            }
+            Image(this.icon)
+              .width(18).height(18)
+              .fillColor($r('app.color.text_secondary'))
           }
           .width(30)
           .height(30)

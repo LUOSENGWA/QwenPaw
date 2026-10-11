@@ -9,7 +9,10 @@
  * 超时语义与 connectionAttempt.ts 一致：10s，127.0.0.1 专项提示。
  */
 
+import { common } from '@kit.AbilityKit';
 import { http } from '@kit.NetworkKit';
+import { ensurePlatformGateway, gatewayAccessPathOf, gatewayCookieOf, gatewayOriginKey,
+  platformContext, isGatewayAuthResponse } from './PlatformGateway';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { QpConnection } from './ConnectionStore';
 import { normalizeBaseUrl, hostOf } from './PairingModel';
@@ -32,8 +35,28 @@ export interface ConnectOutcome {
   openMode: boolean;
 }
 
+// platform 源连接的请求实例缓存：官方文档口径（HttpRequest.enableAutoCookie，API 26）——
+// "自动携带并共享服务端下发的 cookie"是**同一 HttpRequest 实例的多次请求之间**生效，
+// 而云端实例的网关放行态正是靠这条 cookie 会话带回，故这里按 origin 复用实例（其余连接照旧一次一实例）。
+const platformClients: Map<string, http.HttpRequest> = new Map<string, http.HttpRequest>();
+
+function clientFor(originKey: string): http.HttpRequest {
+  const hit: http.HttpRequest | undefined = platformClients.get(originKey);
+  if (hit !== undefined) {
+    return hit;
+  }
+  const req: http.HttpRequest = http.createHttp();
+  req.enableAutoCookie(true);
+  platformClients.set(originKey, req);
+  return req;
+}
+
 export function doRequest(url: string, method: http.RequestMethod, body: string | null,
   token: string | null, agentId: string): Promise<http.HttpResponse> {
+  const gatewayPath: string = gatewayAccessPathOf(url);
+  if (gatewayPath.length > 0) {
+    return doRequestViaGateway(url, gatewayPath, method, body, token, agentId);
+  }
   const req: http.HttpRequest = http.createHttp();
   const header: Record<string, Object> = {
     'Content-Type': 'application/json',
@@ -59,6 +82,63 @@ export function doRequest(url: string, method: http.RequestMethod, body: string 
   const promise: Promise<http.HttpResponse> = req.request(url, options);
   promise.then(() => req.destroy()).catch(() => req.destroy());
   return promise;
+}
+
+// 云端实例（platform 源）：先照常请求；若拿到网关登录页（401/403 + text/html）→ 用 Platform 登录态
+// 换放行（单飞）→ 重放一次；仍不行才报错。对齐 7378 requestWithPlatformGateway。
+async function doRequestViaGateway(url: string, accessPath: string, method: http.RequestMethod,
+  body: string | null, token: string | null, agentId: string): Promise<http.HttpResponse> {
+  const ctx: common.Context | null = platformContext();
+  const send: () => Promise<http.HttpResponse> = (): Promise<http.HttpResponse> => {
+    return sendOnce(url, method, body, token, agentId);
+  };
+  let resp: http.HttpResponse = await send();
+  if (ctx === null || !isGatewayAuthResponse(resp.responseCode, headerOf(resp))) {
+    return resp;
+  }
+  await ensurePlatformGateway(ctx, url, accessPath);
+  resp = await send();
+  if (isGatewayAuthResponse(resp.responseCode, headerOf(resp))) {
+    throw new ConnectError(t($r('app.string.gateway_err_resume_failed')));
+  }
+  return resp;
+}
+
+function headerOf(resp: http.HttpResponse): string {
+  const raw: Object = (resp.header as Record<string, Object>)['Content-Type'];
+  return typeof raw === 'string' ? raw as string : '';
+}
+
+// 单次发送：platform 源复用按 origin 缓存的实例（cookie 自动共享）
+async function sendOnce(url: string, method: http.RequestMethod, body: string | null,
+  token: string | null, agentId: string): Promise<http.HttpResponse> {
+  const req: http.HttpRequest = clientFor(gatewayOriginKey(url));
+  const header: Record<string, Object> = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json'
+  };
+  if (token !== null && token.length > 0) {
+    header['Authorization'] = `Bearer ${token}`;
+  }
+  if (agentId.length > 0) {
+    header['X-Agent-Id'] = agentId;
+  }
+  // 复签换到的 cookie 回带（鸿蒙请求不是浏览器、不跨域共享；官方 FAQ faqs-network-7：放 header 即可）
+  const jar: string = gatewayCookieOf(url);
+  if (jar.length > 0) {
+    header['Cookie'] = jar;
+  }
+  const options: http.HttpRequestOptions = {
+    method: method,
+    header: header,
+    connectTimeout: CONNECT_TIMEOUT_MS,
+    readTimeout: CONNECT_TIMEOUT_MS,
+    expectDataType: http.HttpDataType.STRING
+  };
+  if (body !== null) {
+    options.extraData = body;
+  }
+  return req.request(url, options);
 }
 
 export function jsonOf(response: http.HttpResponse): Record<string, Object> {
@@ -211,7 +291,9 @@ export async function connectToQwenPaw(baseUrlRaw: string, ticketRaw: string,
     username: username,
     agentId: 'default',
     source: 'private',
-    serverMode: serverMode
+    serverMode: serverMode,
+    // 手动/扫码配对的直连连接不走 Platform 网关（空 = 不需要复签）
+    platformAccessPath: ''
   };
   const probe: AgentProbe = await probeAgents(baseUrl, token);
 

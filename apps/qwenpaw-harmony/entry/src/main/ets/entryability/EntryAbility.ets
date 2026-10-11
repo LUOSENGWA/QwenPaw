@@ -17,12 +17,15 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window, ColorMetrics } from '@kit.ArkUI';
 import { initI18n } from '../services/I18n';
+import { bindPlatformContext } from '../services/PlatformGateway';
 
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     initI18n(this.context);
+    // 请求层（无 ctx 的纯函数）做 Platform 网关复签时要用到应用上下文：启动时绑定一次
+    bindPlatformContext(this.context);
     try {
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
     } catch (err) {

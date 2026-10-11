@@ -13,10 +13,6 @@
       "value": "QwenPaw 鸿蒙版"
     },
     {
-      "name": "EntryAbility_label",
-      "value": "QwenPaw"
-    },
-    {
       "name": "tab_chats",
       "value": "会话"
     },
@@ -1989,6 +1985,10 @@
       "value": "工具调用"
     },
     {
+      "name": "chat_tool_loading",
+      "value": "处理中..."
+    },
+    {
       "name": "chat_answer_label",
       "value": "最终回复"
     },
@@ -2147,6 +2147,14 @@
     {
       "name": "chats_archived_empty",
       "value": "暂无已归档会话"
+    },
+    {
+      "name": "chats_search_empty_title",
+      "value": "没有匹配的会话"
+    },
+    {
+      "name": "chats_search_empty_hint",
+      "value": "换个关键词再试试。"
     },
     {
       "name": "module_dbg_group",
@@ -3937,10 +3945,6 @@
       "value": "审批等级"
     },
     {
-      "name": "chat_runtime_follow_agent",
-      "value": "跟随 Agent"
-    },
-    {
       "name": "chat_runtime_agent_default",
       "value": "Agent 默认"
     },
@@ -4625,8 +4629,144 @@
       "value": "12. 地址：带凭据被拒"
     },
     {
-      "name": "chat_placeholder_hint",
-      "value": "选一个会话开始"
+      "name": "split_placeholder_hint",
+      "value": "从左侧选择开始"
+    },
+    {
+      "name": "chat_file_no_preview",
+      "value": "预览不可用，可长按文件改用分享取走"
+    },
+    {
+      "name": "chat_file_gone",
+      "value": "源文件已不在服务端，无法预览"
+    },
+    {
+      "name": "chat_file_created",
+      "value": "新建"
+    },
+    {
+      "name": "chat_file_modified",
+      "value": "修改"
+    },
+    {
+      "name": "chat_file_sent",
+      "value": "已发送"
+    },
+    {
+      "name": "err_load_agent_approval",
+      "value": "读取审批等级失败（HTTP %d）。"
+    },
+    {
+      "name": "err_save_agent_approval",
+      "value": "保存审批等级失败（HTTP %d）。"
+    },
+    {
+      "name": "chat_runtime_follow_agent",
+      "value": "跟随 Agent"
+    },
+    {
+      "name": "community_open_link_failed",
+      "value": "打开链接失败"
+    },
+    {
+      "name": "agent_detail_title",
+      "value": "智能体详情"
+    },
+    {
+      "name": "agent_detail_id",
+      "value": "Agent ID"
+    },
+    {
+      "name": "agent_detail_desc",
+      "value": "说明"
+    },
+    {
+      "name": "agent_detail_status",
+      "value": "状态"
+    },
+    {
+      "name": "agent_detail_disabled",
+      "value": "已停用"
+    },
+    {
+      "name": "agent_detail_model",
+      "value": "当前模型"
+    },
+    {
+      "name": "agent_detail_backend",
+      "value": "后端"
+    },
+    {
+      "name": "agent_detail_workspace",
+      "value": "连接"
+    },
+    {
+      "name": "agent_detail_missing",
+      "value": "找不到这个智能体"
+    },
+    {
+      "name": "agent_detail_load_failed",
+      "value": "加载智能体失败"
+    },
+    {
+      "name": "agent_detail_switch_failed",
+      "value": "切换智能体失败"
+    },
+    {
+      "name": "agent_detail_make_current",
+      "value": "切换为当前智能体"
+    },
+    {
+      "name": "agent_detail_switching",
+      "value": "切换中…"
+    },
+    {
+      "name": "agents_current",
+      "value": "当前"
+    },
+    {
+      "name": "markdown_copy_ok",
+      "value": "复制成功"
+    },
+    {
+      "name": "markdown_copy_failed",
+      "value": "复制失败"
+    },
+    {
+      "name": "gateway_err_no_access_path",
+      "value": "Platform 配对信息不完整，请重新配对这只 QwenPaw。"
+    },
+    {
+      "name": "gateway_err_cannot_resume",
+      "value": "Platform 暂时无法恢复 QwenPaw 访问，请稍后重试。"
+    },
+    {
+      "name": "gateway_err_no_entry",
+      "value": "Platform 没有返回有效的 QwenPaw 配对入口，请稍后重试。"
+    },
+    {
+      "name": "gateway_err_no_base_url",
+      "value": "Platform 没有返回可用的 QwenPaw 地址，请稍后重试。"
+    },
+    {
+      "name": "gateway_err_resume_failed",
+      "value": "Platform 实例访问态恢复失败，请返回后重新进入。"
+    },
+    {
+      "name": "pd_pair_now",
+      "value": "连接此实例"
+    },
+    {
+      "name": "pd_pairing",
+      "value": "正在安全配对…"
+    },
+    {
+      "name": "pd_paired",
+      "value": "已配对并切换为当前连接"
+    },
+    {
+      "name": "pd_pair_failed",
+      "value": "安全配对失败，请重试。"
     }
   ]
 }

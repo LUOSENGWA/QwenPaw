@@ -29,12 +29,23 @@ import { ThemeManager, ThemeSnapshot, ThemeListener } from '../theme/ThemeManage
 import { UiTokens } from '../theme/UiTokens';
 import { GlassCard } from './GlassCard';
 import { SheetGate, moduleSheetOptions } from './SheetGate';
-import { CONN_CHANGE_EVENT } from './WorkbenchTab';
+import { CONN_CHANGE_EVENT } from '../services/AppEvents';
 import { menuOptions } from '../theme/MenuMaterial';
+import { swapRoute } from '../services/NavPush';
+import { rememberPage } from '../services/LastPage';
+
+/** 智能体详情页入栈参数（路由 'agent'；导航栈由详情页 onReady 自取，故这里只带 id） */
+export interface AgentDetailParam {
+  agentId: string;
+}
 
 @Component
 export struct AgentsTab {
   scroller: Scroller = new Scroller();
+  // 根导航栈（分栏时把智能体详情送到右栏）
+  navStack: NavPathStack = new NavPathStack();
+  // 是否分栏（平板/电脑横屏）：分栏下右栏展示详情，单栏下点行只切换当前智能体（与 7378 一致）
+  @Prop split: boolean = false;
   // 搜索词（由 Index 标题栏搜索区输入，@Prop 单向同步驱动列表过滤）
   @Prop query: string = '';
   // 状态上报：p = 滚动进度∈[0,1]；agentName = 当前智能体名；
@@ -403,6 +414,17 @@ export struct AgentsTab {
     }
   }
 
+  // 分栏下把该智能体的详情放进右栏（对齐工作台/社区二级页：同名页只留一份、换目标即换内容）。
+  // 单栏不跳 —— 7378 的智能体页点一下就是切换当前智能体，没有详情页。
+  private openDetail(agent: AgentInfo): void {
+    if (!this.split) {
+      return;
+    }
+    const param: AgentDetailParam = { agentId: agent.id };
+    rememberPage(1, 'agent', agent.id);
+    swapRoute(this.navStack, 'agent', param);
+  }
+
   // 切换当前智能体 —— 对齐 RN switchAgent 守卫（当前项/切换中不重复触发）
   private async switchAgent(agentId: string): Promise<void> {
     if (this.conn === null || agentId === this.activeAgentId || this.switchingId.length > 0) {
@@ -731,6 +753,7 @@ export struct AgentsTab {
                     accentBg: this.isDark ? this.theme.accentBgDark : this.theme.accentBg,
                     onSwitch: () => {
                       this.switchAgent(agent.id);
+                      this.openDetail(agent);
                     },
                     onEdit: () => {
                       this.openProfile(agent);

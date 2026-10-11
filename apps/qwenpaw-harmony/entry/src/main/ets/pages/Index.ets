@@ -33,23 +33,24 @@ import {
   BlurStrategy,
   hdsMaterial
 } from '@kit.UIDesignKit';
-import { uiMaterial, display, LengthMetrics } from '@kit.ArkUI';
+import { uiMaterial, display, LengthMetrics, ComponentContent } from '@kit.ArkUI';
 import { emitter } from '@kit.BasicServicesKit';
 import {
   PAWAPP_OPEN_EVENT, PawAppParam, takePawAppRequest,
-  NOTIFICATIONS_OPEN_EVENT, TAB_SWITCH_EVENT, takeTabRequest
+  NOTIFICATIONS_OPEN_EVENT, TAB_SWITCH_EVENT, takeTabRequest, CONN_CHANGE_EVENT
 } from '../services/AppEvents';
 import { common, Configuration, ConfigurationConstant } from '@kit.AbilityKit';
 import { ThemeManager, ThemeSnapshot, ThemeListener } from '../theme/ThemeManager';
 import { syncConsoleThemeToManager } from '../services/ConsoleTheme';
 import { UiTokens } from '../theme/UiTokens';
 import { AGENT_CREATE_EVENT } from '../services/AgentsService';
-import { SETTINGS_OPEN_EVENT, CHAT_PLACEHOLDER_ROUTE } from '../services/AppEvents';
 import { ConnectPanel } from '../components/ConnectPanel';
+import { chatPlaceholderPane } from '../components/ChatPlaceholder';
 import { BP_LG, clampWidthOf, wideOffsetOf } from '../theme/Breakpoints';
 import { SearchPill } from '../components/SearchPill';
-import { AgentsTab } from '../components/AgentsTab';
-import { CommunityTab, PlatformLoginParam, CommunityComposeParam } from '../components/CommunityTab';
+import { AgentsTab, AgentDetailParam } from '../components/AgentsTab';
+import { CommunityTab, PlatformLoginParam, CommunityComposeParam, CommunityArticleParam
+} from '../components/CommunityTab';
 import {
   CommunityArticleType, CommunityMeta, getCommunityMeta
 } from '../services/CommunityService';
@@ -58,6 +59,8 @@ import { WorkbenchTab } from '../components/WorkbenchTab';
 import { SegmentedControl } from '../components/SegmentedControl';
 import { SettingsContent } from '../components/SettingsContent';
 import { SheetGate, moduleSheetOptions } from '../components/SheetGate';
+import { pushRoute, swapRoute } from '../services/NavPush';
+import { recallPage, LastPage } from '../services/LastPage';
 
 // 图标 = PR #7378 lucide-react-native 同款几何（lucide-static 官方 SVG）
 const TAB_ICONS: Resource[] = [
@@ -100,10 +103,10 @@ struct Index {
   // 二级页请求切页签（如设置页「当前 Agent」行）→ 用控制器切页，走与点击页签同一路径
   private tabSwitchListener: () => void = (): void => {
   };
-  // 工作台等二级入口请求打开设置弹窗
-  private settingsListener: () => void = (): void => {
-    this.openSettings();
+  // 连接（QwenPaw 服务端）切换 / 新增 / 移除 → 主题色跟到新服务端（见 CONN_CHANGE_EVENT）
+  private connChangeListener: () => void = (): void => {
   };
+  // 工作台等二级入口请求打开设置弹窗
   private controller: HdsTabsController = new HdsTabsController();
   private scrollerChats: Scroller = new Scroller();
   private scrollerAgents: Scroller = new Scroller();
@@ -125,8 +128,15 @@ struct Index {
       // 否则大屏偏移量只在下次切页/接管标题时才生效（首屏标题会留在最左）
       this.rebuildTitleBarOpts();
     }
-    this.syncSplitPlaceholder();
   };
+
+  // 会话页搜索串变化：把会话列表拉回顶部（命中项可能落在当前视口之上，不拉回等于"搜了没反应"）
+  private onChatsQueryChanged(): void {
+    if (this.currentIndex !== 0) {
+      return;
+    }
+    this.scrollerChats.scrollEdge(Edge.Top);
+  }
   // 内容列限宽值：窄屏退回 '100%'（不限宽）；分栏模式下左栏本身已是窄栏，不再限宽
   private clampW(): Length {
     if (this.isSplit()) {
@@ -136,23 +146,18 @@ struct Index {
     return m > 0 ? m : '100%';
   }
 
-  // 分栏只给「会话」页用（智能体/社区/工作台保持单栏），且只在横屏 + 宽屏下生效
+  // 图 / 电脑端横屏走双栏：**四个页签都双栏**（左栏 = 页签栏 + 该页列表，右栏 = 该页详情 / 空态占位）。
+  // 这样 Navigation.mode 在宽屏下恒为 Split，切页签不再触发单双栏切换 —— 平台那套"导航栏 420vp ⇄ 全宽"
+  // 的形变消失，切页只剩一次横向滑动（形变与横滑叠在一起的"硬/乱"从结构上不再可能出现）。
+  // 每页的详情仍走同一个 NavPathStack：push 出来的详情页在右栏渲染（平台行为），返回键回列表。
   private isSplit(): boolean {
-    return this.currentIndex === 0 && this.winW >= BP_LG && this.winW > this.winH;
+    return this.winW >= BP_LG && this.winW > this.winH;
   }
 
-  // 分栏右栏空态：未打开会话时压一个占位页（QwenPaw 形象），不留一片空白/纯黑；
-  // 打开会话时它自然被压在下面，退出单栏时再收掉（只在栈里仅剩它时收）。
-  private syncSplitPlaceholder(): void {
-    const names: string[] = this.stack.getAllPathName();
-    if (this.isSplit()) {
-      if (names.length === 0) {
-        this.stack.pushPath({ name: CHAT_PLACEHOLDER_ROUTE, param: new Object() });
-      }
-    } else if (names.length === 1 && names[0] === CHAT_PLACEHOLDER_ROUTE) {
-      this.stack.pop(false);
-    }
-  }
+  // 分栏右栏空态：由平台 splitPlaceholder 指定占位内容（见 build()），不占路由栈 ——
+  // 之前把占位页 push 进栈，会留在会话页下面（单栏下返回先落在占位页上，而该页消费返回键）
+  private placeholder: ComponentContent<Object> =
+    new ComponentContent(this.getUIContext(), wrapBuilder(chatPlaceholderPane));
   // 设置 = 半模态弹窗
   @State settingsShown: boolean = false;
   private settingsGate: SheetGate = new SheetGate();
@@ -162,7 +167,8 @@ struct Index {
   @State titleP: number = 0;                 // 头部滚动进度 0→1（AgentsTab.onDidScroll 上报，用于收起键盘等）
   @State agentsName: string = '';             // 当前智能体名（接管时作为标题显示）
   @State searchQuery: string = '';            // 智能体页标题栏搜索输入（@Prop 单向同步给 AgentsTab 过滤）
-  @State chatsQuery: string = '';             // 会话页搜索（@Link 同步给 ConnectPanel）
+  // 会话页搜索：搜索态变化时把列表拉回顶部（列表在页面 Scroll 内，命中项可能落在视口之上）
+  @State @Watch('onChatsQueryChanged') chatsQuery: string = '';
   @State wbQuery: string = '';                // 工作台搜索（@Link 同步给 WorkbenchTab）
   // —— 社区页标题栏工具条状态（放在标题栏作用域内才吃到沉浸光感与滚动模糊）——
   @State communitySort: string = 'recommended';   // 推荐 / 最新
@@ -240,12 +246,12 @@ struct Index {
         return;
       }
       const param: PawAppParam = { appId: appId };
-      this.stack.pushPath({ name: 'pawapp', param: param });
+      pushRoute(this.stack, 'pawapp', param);
     };
     emitter.on(PAWAPP_OPEN_EVENT, this.pawAppListener);
     // 通知设置入口（设置区「通知」行）→ 本页导航栈打开通知页
     this.notifyListener = (): void => {
-      this.stack.pushPath({ name: 'notifications' });
+      pushRoute(this.stack, 'notifications');
     };
     emitter.on(NOTIFICATIONS_OPEN_EVENT, this.notifyListener);
     // 二级页请求切页签：用控制器切页（changeIndex → onChange → enterTab，与点击页签同路径）
@@ -257,8 +263,17 @@ struct Index {
       this.controller.changeIndex(index);
     };
     emitter.on(TAB_SWITCH_EVENT, this.tabSwitchListener);
+    // 服务端变了 → 主色按新服务端重取一次并应用：控制台主色存在服务端（GET /api/config/theme），
+    // 换服务端后不重取就会继续沿用上一个服务端的颜色（默认跟随服务端，见 ThemeManager）
+    this.connChangeListener = (): void => {
+      const c: common.UIAbilityContext =
+        this.getUIContext().getHostContext() as common.UIAbilityContext;
+      syncConsoleThemeToManager(c).then((): void => {
+        this.applyTheme(ThemeManager.get().snapshot());
+      });
+    };
+    emitter.on(CONN_CHANGE_EVENT, this.connChangeListener);
     // 工作台等二级入口请求打开设置弹窗
-    emitter.on(SETTINGS_OPEN_EVENT, this.settingsListener);
     // 沉浸光感档位一律跟随系统：材质等级固定 ADAPTIVE（官方推荐档 —— 系统按设备算力在
     // 精美/轻柔/流畅间自行调整），不再手工 getSystemMaterialTypes() 探测后写死 SMOOTH 兜底；
     // 材质类型同样交给 ADAPTIVE。uiMaterial 侧的“档位”（ImmersiveStyle 厚薄）只是偏好，
@@ -289,7 +304,7 @@ struct Index {
     emitter.off(PAWAPP_OPEN_EVENT, this.pawAppListener);
     emitter.off(NOTIFICATIONS_OPEN_EVENT, this.notifyListener);
     emitter.off(TAB_SWITCH_EVENT, this.tabSwitchListener);
-    emitter.off(SETTINGS_OPEN_EVENT, this.settingsListener);
+    emitter.off(CONN_CHANGE_EVENT, this.connChangeListener);
     if (this.themeListener !== null) {
       ThemeManager.get().unsubscribe(this.themeListener);
       this.themeListener = null;
@@ -298,6 +313,18 @@ struct Index {
 
   onConfigurationUpdate(newConfig: Configuration): void {
     this.isDark = newConfig.colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK;
+  }
+
+  // 系统返回键 / 侧滑：只有 @Entry 页面的 onBackPress 生命周期能接管
+  //（官方 FAQ faqs-arkui-531：onBackPress 是自定义组件生命周期回调，仅 @Entry 装饰的组件生效；
+  //  返回 true = 本页自己处理返回、不走默认路由逻辑，false = 走默认逻辑即退出应用）。
+  // 栈里还有详情页 → 退栈：分栏下右栏随之回到"未打开详情"的占位态；栈空（正在看列表首页）→ 返回 false 交系统退出。
+  onBackPress(): boolean {
+    if (this.stack.size() > 0) {
+      this.stack.pop(true);
+      return true;
+    }
+    return false;
   }
 
   // 主题色（深浅各取其一）：标题栏磨砂底色、搜索条手指光等的统一取色口径
@@ -536,17 +563,24 @@ struct Index {
   // 切页总入口（由 HdsTabs.onAnimationStart 调用）：落定当前页 + 工具条横向滑 + 标题联动
   private enterTab(from: number, to: number): void {
     this.currentIndex = to;
-    // 离开「会话」页：分栏下页签栏在左栏内、会话详情可能还留在右栏（切到单栏会满屏盖住页签），
-    // 故一并退栈（单栏下被推送页覆盖时页签本就点不到，此分支不会触发）
-    if (to !== 0 && this.stack.size() > 0) {
+    // 换页签 = 换一栏内容：右栏不能留着上一个页签的详情页（双栏下会被当成"当前页的详情"），
+    // 故与切页同帧退栈（NavPathStack 连续多次操作只渲染最终态）。用带过场的 pop，详情页顺势滑出。
+    if (to !== from && this.stack.size() > 0) {
       for (let i = this.stack.size(); i > 0; i--) {
-        this.stack.pop(false);
+        this.stack.pop(true);
       }
     }
-    this.syncSplitPlaceholder();
+    // 退栈之后：按该页签的记忆把上次点进去的二级页放回右栏（顺序不能反 —— 先恢复会被上面的退栈弹掉）
+    if (to !== from) {
+      this.restoreLastPage(to);
+    }
     if (to === 2) {
-      // 社区页：分类胶囊取 Platform meta（缓存；失败只剩「全部」）
-      this.loadCommunityTypes();
+      // 社区页：分类胶囊取 Platform meta（缓存；失败只剩「全部」）。这是异步请求 + 一次状态落地
+      //（会重建标题栏工具条与页内胶囊列），若与切页动画同帧发起，落地时机正好压在中途 →
+      // 观感是"页面滑到一半自己抖一下"。故让开动画帧再取（与 moveStrip 的收尾同一节奏）。
+      setTimeout((): void => {
+        this.loadCommunityTypes();
+      }, TABS_ANIM_MS + 40);
     }
     this.moveStrip(from, to, to > from ? 1 : -1);
     if (to === 1) {
@@ -560,6 +594,32 @@ struct Index {
     } else {
       // 其余 tab 互切：标题换名同样从左侧滑入
       this.slideTitleIn();
+    }
+  }
+
+  // 分栏下恢复该页签最后打开的二级页（智能体详情 / 社区文章 / 工作台模块与分类页）。
+  // 只在分栏下做：单栏是整页推入式，"切回列表就该停在列表"；记忆由各页签在打开二级页时写入
+  // （services/LastPage，进程内 —— 产品口径是"打开过、点过才要记忆"，启动不恢复）。
+  private restoreLastPage(tab: number): void {
+    if (!this.isSplit()) {
+      return;
+    }
+    const rec: LastPage | null = recallPage(tab);
+    if (rec === null) {
+      return;
+    }
+    if (rec.route === 'agent') {
+      const p: AgentDetailParam = { agentId: rec.key };
+      swapRoute(this.stack, 'agent', p);
+    } else if (rec.route === 'community-article') {
+      const p: CommunityArticleParam = { articleId: rec.key, stack: this.stack };
+      swapRoute(this.stack, 'community-article', p);
+    } else if (rec.route === 'module') {
+      const p: Record<string, string> = { 'key': rec.key };
+      swapRoute(this.stack, 'module', p);
+    } else if (rec.route === 'workbench-category') {
+      const p: Record<string, Object> = { 'key': rec.key, 'stack': this.stack };
+      swapRoute(this.stack, 'workbench-category', p);
     }
   }
 
@@ -676,14 +736,6 @@ struct Index {
     });
   }
 
-  private t(res: Resource): string {
-    try {
-      const host: common.Context = this.getUIContext().getHostContext() as common.Context;
-      return host.resourceManager.getStringSync(res.id);
-    } catch (e) {
-      return '';
-    }
-  }
 
   // 分类（Platform meta；失败则只剩「全部」）
   private loadCommunityTypes(): void {
@@ -721,11 +773,11 @@ struct Index {
     getPlatformAccessToken(ctx).then((token: string): void => {
       if (token.length > 0) {
         const composeParam: CommunityComposeParam = { stack: this.stack };
-        this.stack.pushPath({ name: 'community-compose', param: composeParam });
+        pushRoute(this.stack, 'community-compose', composeParam);
         return;
       }
       const param: PlatformLoginParam = { returnTo: 'compose', stack: this.stack };
-      this.stack.pushPath({ name: 'platform-login', param: param });
+      pushRoute(this.stack, 'platform-login', param);
     });
   }
 
@@ -835,7 +887,12 @@ struct Index {
         TabContent() {
           Scroll(this.scrollerChats) {
             Column() {
-              ConnectPanel({ navStack: this.stack, query: this.chatsQuery, activeTab: this.currentIndex })
+              ConnectPanel({
+                navStack: this.stack,
+                query: this.chatsQuery,
+                activeTab: this.currentIndex,
+                wideLandscape: this.winW >= BP_LG && this.winW > this.winH
+              })
             }
             .width('100%')
             .constraintSize({ minHeight: '100%', maxWidth: this.clampW() })
@@ -850,48 +907,70 @@ struct Index {
         .tabBar(this.tabItem(0))
 
         TabContent() {
-          // 智能体页自持 List（内滚 + 下拉刷新）：
-          // 标题栏搜索条 / 标题接管经 query + onHeaderState 联动
-          AgentsTab({
-            scroller: this.scrollerAgents,
-            query: this.searchQuery,
-            onHeaderState: (p: number, name: string, takeover: boolean): void => {
-              const was: number = this.titleP;
-              const nameChanged: boolean = name !== this.agentsName;
-              this.titleP = p;
-              this.agentsName = name;
-              if (takeover !== this.nameTitle) {
-                // 接管/还原：换文案 + 滑入动画
-                this.switchTitle(takeover);
-              } else if (nameChanged && this.nameTitle) {
-                // 接管态下切换了智能体：标题组合串随之更新（同样带滑入动画）
-                this.slideTitleIn();
-              }
-              if (was <= 0.5 && p > 0.5) {
-                // 滚动过半：释放输入焦点（收起键盘），让位标题栏
-                this.getUIContext().getFocusController().clearFocus();
-              }
+          // 大屏内容列限宽（官方《页面布局场景》缩进布局）：与其余 tab 同一口径
+          Row() {
+            Column() {
+              // 智能体页自持 List（内滚 + 下拉刷新）：
+              // 标题栏搜索条 / 标题接管经 query + onHeaderState 联动
+              AgentsTab({
+                scroller: this.scrollerAgents,
+                navStack: this.stack,
+                split: this.isSplit(),
+                query: this.searchQuery,
+                onHeaderState: (p: number, name: string, takeover: boolean): void => {
+                  const was: number = this.titleP;
+                  const nameChanged: boolean = name !== this.agentsName;
+                  this.titleP = p;
+                  this.agentsName = name;
+                  if (takeover !== this.nameTitle) {
+                    // 接管/还原：换文案 + 滑入动画
+                    this.switchTitle(takeover);
+                  } else if (nameChanged && this.nameTitle) {
+                    // 接管态下切换了智能体：标题组合串随之更新（同样带滑入动画）
+                    this.slideTitleIn();
+                  }
+                  if (was <= 0.5 && p > 0.5) {
+                    // 滚动过半：释放输入焦点（收起键盘），让位标题栏
+                    this.getUIContext().getFocusController().clearFocus();
+                  }
+                }
+              })
             }
-          })
+            .width(this.clampW())
+            .height('100%')
+          }
+          .width('100%')
+          .height('100%')
+          .justifyContent(FlexAlign.Center)
         }
         .tabBar(this.tabItem(1))
 
         TabContent() {
-          // 社区页自持 List（内滚 + 下拉刷新 + 滑到底翻页）：标题栏滚动模糊只绑当前 tab 的 Scroller；
-          // 排序/分类状态由标题栏工具条持有（@Prop 单向同步过来，变更即重取）
-          CommunityTab({
-            scroller: this.scrollerCommunity,
-            navStack: this.stack,
-            onScrollY: (y: number): void => {
-              // 标题收起（列表滚过一点）→ 工具条上提 12vp 贴标题
-              const collapsed: boolean = y > 16;
-              if (collapsed !== this.communityCollapsed) {
-                this.communityCollapsed = collapsed;
-              }
-            },
-            sort: this.communitySort,
-            type: this.communityType
-          })
+          // 大屏内容列限宽（官方《页面布局场景》缩进布局）：与其余 tab 同一口径
+          Row() {
+            Column() {
+              // 社区页自持 List（内滚 + 下拉刷新 + 滑到底翻页）：标题栏滚动模糊只绑当前 tab 的 Scroller；
+              // 排序/分类状态由标题栏工具条持有（@Prop 单向同步过来，变更即重取）
+              CommunityTab({
+                scroller: this.scrollerCommunity,
+                navStack: this.stack,
+                onScrollY: (y: number): void => {
+                  // 标题收起（列表滚过一点）→ 工具条上提 12vp 贴标题
+                  const collapsed: boolean = y > 16;
+                  if (collapsed !== this.communityCollapsed) {
+                    this.communityCollapsed = collapsed;
+                  }
+                },
+                sort: this.communitySort,
+                type: this.communityType
+              })
+            }
+            .width(this.clampW())
+            .height('100%')
+          }
+          .width('100%')
+          .height('100%')
+          .justifyContent(FlexAlign.Center)
         }
         .tabBar(this.tabItem(2))
 
@@ -955,8 +1034,19 @@ struct Index {
     // 平板 / PC（lg 档）走分栏：平台自带「左导航栏 + 右内容区」——会话页即「左会话栏 + 右聊天栏」
     //（官方口径：mode = Stack / Split / Auto；Auto 在折叠屏与平板默认分栏）。窄屏仍单栏。
     .mode(this.isSplit() ? NavigationMode.Split : NavigationMode.Stack)
-    // 左栏宽度：官方默认 240vp 偏窄（会话列表挤在一起）→ 给 360vp
+    // 单双栏切换动画保持平台默认开启：本页 navBar 就是整条 HdsTabs，切 tab 触发的"导航栏
+    // 420vp ⇄ 全宽"由平台做形变（enableModeChangeAnimation 默认 true）。关掉它会变成一帧内的
+    // 硬跳位（观感"硬"）；保留形变后单双栏是连续过渡，切页观感只剩横向滑动 + 形变两条。
+    // （官方 arkts-navigation-split-mode：enableModeChangeAnimation 控制单双栏切换动画，默认开启）
+    .enableModeChangeAnimation(true)
+    // 分栏右栏空态内容：官方 splitPlaceholder —— 占位内容不进路由栈（详见 components/ChatPlaceholder.ets）
+    .splitPlaceholder(this.placeholder)
+    // 左栏宽度：官方默认 240vp 偏窄（会话列表挤在一起）→ 给 420vp
     .navBarWidth(NAV_BAR_W)
+    // 双栏是四个页签共用的一条左栏：各页列表宽度需求不同（工作台/智能体的卡片更宽），
+    // 按官方 enableDragBar + navBarWidthRange 放开分隔条拖拽，由使用者拖到合适宽度
+    .enableDragBar(true)
+    .navBarWidthRange({ minWidth: 320, maxWidth: 760 })
     // 根容器铺页面底色 + 扩安全区到窗口四边（与二级页同一口径）：底部悬浮页签栏周围、
     // 手势条一带、屏幕左右两侧都由这里托底，避免露出窗口默认的黑带。
     .backgroundColor($r('app.color.page_bg'))
