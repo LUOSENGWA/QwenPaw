@@ -152,16 +152,19 @@ def test_install_lifecycle(client) -> None:
             await asyncio.sleep(0.02)
         return service.install_status(task_id)
 
-    with patch(
-        "qwenpaw.coding_cli.service.CodingCliService._run",
-        return_value=SimpleNamespace(
-            returncode=0,
-            stdout="qwen 0.25.0",
-            stderr="",
+    with (
+        patch(
+            "qwenpaw.coding_cli.service.CodingCliService._run",
+            return_value=SimpleNamespace(
+                returncode=0,
+                stdout="qwen 0.25.0",
+                stderr="",
+            ),
         ),
-    ), patch(
-        "qwenpaw.coding_cli.service.CodingCliService._installable",
-        return_value=True,
+        patch(
+            "qwenpaw.coding_cli.service.CodingCliService._installable",
+            return_value=True,
+        ),
     ):
         task = asyncio.run(drive())
 
@@ -195,11 +198,14 @@ def test_install_nightly_tag_uses_dist_tag(client) -> None:
                 return
             await asyncio.sleep(0.02)
 
-    with patch.object(
-        CodingCliService,
-        "_run",
-        staticmethod(fake_run),
-    ), patch.object(CodingCliService, "_installable", return_value=True):
+    with (
+        patch.object(
+            CodingCliService,
+            "_run",
+            staticmethod(fake_run),
+        ),
+        patch.object(CodingCliService, "_installable", return_value=True),
+    ):
         asyncio.run(drive())
 
     assert ("npm", "install", "-g", "@qwen-code/qwen-code@nightly") in calls
@@ -243,7 +249,9 @@ def test_qoder_settings_roundtrip(client, tmp_path) -> None:
     """qoder settings PUT lands in ~/.qoder/settings.json and deep-merges."""
     res = client.put(
         "/api/coding-cli/qoder/settings",
-        json={"settings": {"model": {"name": "auto"}, "ui": {"maxTurns": 2000}}},
+        json={
+            "settings": {"model": {"name": "auto"}, "ui": {"maxTurns": 2000}}
+        },
     )
     assert res.status_code == 200
     doc = json.loads(
