@@ -21,6 +21,10 @@ class CliSpec:
             credentials (redacted on read, ``***`` preserves on write).
         extra_auth_files: Additional credential files (entire file
             treated as secret).
+        auth_env_vars: Env vars whose non-empty value counts as
+            configured auth (reported as method ``env``; values are
+            never echoed). Checked before auth_paths/extra_auth_files,
+            matching Qoder's PAT-over-login precedence.
         requires: Binaries that must exist for install to be possible.
     """
 
@@ -31,6 +35,7 @@ class CliSpec:
     settings_path: str
     auth_paths: tuple[str, ...] = ()
     extra_auth_files: tuple[str, ...] = ()
+    auth_env_vars: tuple[str, ...] = ()
     requires: tuple[str, ...] = ("npm",)
     defaults: dict[str, Any] = field(default_factory=dict)
 
@@ -53,6 +58,19 @@ CLIS: dict[str, CliSpec] = {
             bin_name="opencode",
             settings_path="~/.config/opencode/opencode.json",
             extra_auth_files=("~/.local/share/opencode/auth.json",),
+        ),
+        CliSpec(
+            id="qoder",
+            name="Qoder",
+            npm_package="@qoder-ai/qodercli",
+            bin_name="qoder",
+            settings_path="~/.qoder/settings.json",
+            # Qoder auth is not an OpenAI-style settings dot-path:
+            # headless/CI auth is the QODER_PERSONAL_ACCESS_TOKEN env
+            # var; interactive /login keeps an auto-refreshed token in
+            # its config dir (no documented stable file name, not
+            # probed). Settings still manages model/tools/mcp.
+            auth_env_vars=("QODER_PERSONAL_ACCESS_TOKEN",),
         ),
     )
 }

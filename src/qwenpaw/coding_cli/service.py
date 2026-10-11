@@ -83,6 +83,10 @@ def redact_settings(spec: CliSpec, data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _auth_configured(spec: CliSpec, settings: dict[str, Any]) -> bool:
+    # Env-var auth (qoder PAT): a non-empty value counts as configured.
+    # Checked first — Qoder's own rule is PAT-over-login.
+    if spec.auth_env_vars:
+        return any(os.environ.get(v) for v in spec.auth_env_vars)
     if spec.auth_paths:
         return any(bool(_get_dot_path(settings, p)) for p in spec.auth_paths)
     # CLI whose credentials live in separate files.

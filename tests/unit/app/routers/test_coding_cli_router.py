@@ -55,7 +55,7 @@ def test_list_clis(client, no_bin) -> None:
     res = client.get("/api/coding-cli")
     assert res.status_code == 200
     ids = {item["id"] for item in res.json()["clis"]}
-    assert ids == {"qwen-code", "opencode"}
+    assert ids == {"qwen-code", "opencode", "qoder"}
     for item in res.json()["clis"]:
         assert item["installed"] is False
         assert item["auth"]["configured"] is False
@@ -222,6 +222,35 @@ def test_opencode_auth_probe_without_settings_file(client, tmp_path) -> None:
     res = client.get("/api/coding-cli")
     items = {item["id"]: item for item in res.json()["clis"]}
     assert items["opencode"]["auth"]["configured"] is True
+
+
+def test_qoder_auth_probe_via_pat_env(client, monkeypatch) -> None:
+    """qoder's headless auth is the QODER_PERSONAL_ACCESS_TOKEN env var;
+    the probe reports configured=True only while it is set, and never
+    echoes the value into the response."""
+    res = client.get("/api/coding-cli")
+    items = {item["id"]: item for item in res.json()["clis"]}
+    assert items["qoder"]["auth"]["configured"] is False
+
+    monkeypatch.setenv("QODER_PERSONAL_ACCESS_TOKEN", "pat-secret-value")
+    res = client.get("/api/coding-cli")
+    items = {item["id"]: item for item in res.json()["clis"]}
+    assert items["qoder"]["auth"]["configured"] is True
+    assert "pat-secret-value" not in res.text
+
+
+def test_qoder_settings_roundtrip(client, tmp_path) -> None:
+    """qoder settings PUT lands in ~/.qoder/settings.json and deep-merges."""
+    res = client.put(
+        "/api/coding-cli/qoder/settings",
+        json={"settings": {"model": {"name": "auto"}, "ui": {"maxTurns": 2000}}},
+    )
+    assert res.status_code == 200
+    doc = json.loads(
+        (tmp_path / ".qoder/settings.json").read_text(encoding="utf-8"),
+    )
+    assert doc["model"]["name"] == "auto"
+    assert doc["ui"]["maxTurns"] == 2000
 
 
 def test_install_busy_409(client) -> None:
