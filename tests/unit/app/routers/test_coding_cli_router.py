@@ -250,7 +250,7 @@ def test_qoder_settings_roundtrip(client, tmp_path) -> None:
     res = client.put(
         "/api/coding-cli/qoder/settings",
         json={
-            "settings": {"model": {"name": "auto"}, "ui": {"maxTurns": 2000}}
+            "settings": {"model": {"name": "auto"}, "ui": {"maxTurns": 2000}},
         },
     )
     assert res.status_code == 200
