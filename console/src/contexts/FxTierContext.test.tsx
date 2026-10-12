@@ -7,6 +7,8 @@
  * - the effective tier is written to <html data-fx-tier>
  * - setFxTierPreference persists to localStorage
  * - OS reduced-motion changes are followed dynamically (system only)
+ * - the OS state is re-read when switching back to the system preference
+ *   (a stale cached state from an explicit-mode period must not leak in)
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
@@ -148,5 +150,27 @@ describe("FxTierProvider + useFxTier", () => {
       setReducedMotion(true);
     });
     expect(result.current.fxTier).toBe("off");
+  });
+
+  it("re-reads the OS state when switching back to the system preference", () => {
+    const { result } = renderHook(() => useFxTier(), { wrapper });
+
+    act(() => {
+      result.current.setFxTierPreference("reduced");
+    });
+
+    // The OS setting flips while the explicit mode is active. No listener
+    // is attached in this period, so only a fresh read (not a change
+    // event) can catch the new OS state.
+    act(() => {
+      setReducedMotion(true);
+    });
+    expect(result.current.fxTier).toBe("reduced");
+
+    act(() => {
+      result.current.setFxTierPreference("system");
+    });
+    expect(result.current.fxTier).toBe("reduced");
+    expect(document.documentElement.dataset.fxTier).toBe("reduced");
   });
 });

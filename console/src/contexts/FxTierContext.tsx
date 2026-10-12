@@ -78,8 +78,14 @@ export function FxTierProvider({ children }: { children: ReactNode }) {
     document.documentElement.dataset.fxTier = fxTier;
   }, [fxTier]);
 
-  // Follow system reduced-motion changes when the preference is "system"
+  // Follow system reduced-motion changes when the preference is "system".
+  // Re-read the current OS state on every preference change, not only on
+  // future "change" events: while an explicit mode (full/reduced/off) is
+  // active there is no listener, so the cached state can go stale if the OS
+  // setting flips. Without the re-read, switching back to "system" would
+  // resolve from the stale state instead of the current OS state.
   useEffect(() => {
+    setSystemReduced(isSystemReducedMotion());
     if (fxTierPreference !== "system") return;
 
     const mq = window.matchMedia(REDUCED_MOTION_QUERY);
