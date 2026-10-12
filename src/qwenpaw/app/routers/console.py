@@ -356,6 +356,33 @@ def _is_reconnect_request(request_data: Union[AgentRequest, dict]) -> bool:
     return getattr(request_data, "reconnect", None) is True
 
 
+def _user_message_echo_sse(content_parts: list[Any]) -> Optional[str]:
+    """Return the user's own content as a replayable SSE echo frame.
+
+    The frame has no ``object`` field, same shape as the ``turn_usage``
+    and ``replay_end`` frames: the console chat SDK and the React Native
+    client ignore stream frames they do not recognize.
+    """
+    items: list[Any] = []
+    for part in content_parts:
+        if hasattr(part, "model_dump"):
+            try:
+                items.append(part.model_dump(mode="json"))
+                continue
+            except Exception:  # pragma: no cover - keep echo best-effort
+                pass
+        if isinstance(part, (dict, str)):
+            items.append(part)
+    if not items:
+        return None
+    frame = {
+        "type": "user_message",
+        "id": uuid.uuid4().hex,
+        "content": items,
+    }
+    return f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
+
+
 def _chat_registration_fields(native_payload: dict[str, Any]) -> dict:
     """Return first-class subagent fields from an internal request."""
     request_context = native_payload["meta"].get("request_context")
@@ -495,10 +522,27 @@ async def post_console_chat(
         # ContextVarsSetupHook (from the chat meta persisted above);
         # the router no longer pre-resolves or injects them.
 
+        # The user's own message is only persisted at run end, so a client
+        # without a local echo (mobile app, or the console opened on another
+        # device) cannot see this turn until the run finishes. Emit it as the
+        # first frame of the run: it then flows through the live stream and
+        # is included in reconnect replay like every other frame.
+        echo_frame = _user_message_echo_sse(
+            native_payload.get("content_parts") or [],
+        )
+
+        async def _stream_with_user_echo(
+            run_payload: dict[str, Any],
+        ) -> AsyncGenerator[str, None]:
+            if echo_frame is not None:
+                yield echo_frame
+            async for sse in console_channel.stream_one(run_payload):
+                yield sse
+
         queue, is_new_run = await tracker.attach_or_start(
             chat.id,
             native_payload,
-            console_channel.stream_one,
+            _stream_with_user_echo,
             owner=workspace,
             on_finished=workspace.chat_manager.mark_chat_finished,
         )
