@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """QWENPAW_SESSION_ID 注入单测（#8156 / 同 Agent 多会话串根治）.
 
 验证 ``execute_shell_command`` 的会话 ID 注入块：当前会话（framework
@@ -43,14 +44,20 @@ def test_injects_matrix_room_session():
     from qwenpaw.app.agent_context import set_current_session_id
 
     set_current_session_id("matrix:!abc123:matrix.example")
-    assert _inject_session_env().get("QWENPAW_SESSION_ID") == "matrix:!abc123:matrix.example"
+    assert (
+        _inject_session_env().get("QWENPAW_SESSION_ID")
+        == "matrix:!abc123:matrix.example"
+    )
 
 
 def test_injects_console_session():
     from qwenpaw.app.agent_context import set_current_session_id
 
     set_current_session_id("1789368185062-b1556de")
-    assert _inject_session_env().get("QWENPAW_SESSION_ID") == "1789368185062-b1556de"
+    assert (
+        _inject_session_env().get("QWENPAW_SESSION_ID")
+        == "1789368185062-b1556de"
+    )
 
 
 def test_omits_when_no_session():
