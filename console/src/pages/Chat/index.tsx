@@ -4311,6 +4311,70 @@ export default function ChatPage() {
             >;
           }
 
+          if (payload.type === "user_message") {
+            // #8203 user-message echo: carries no `object` field, so it
+            // must never reach the SDK response builder — unknown shapes
+            // route to its error path, which fails the whole stream
+            // ("Answers have stopped"). Instead feed the existing
+            // pending user message cache: patchLastUserMessage renders
+            // the user card while the run is in flight and clears the
+            // entry once the backend history contains the turn (by
+            // client_message_id, else by text). This is what makes a
+            // mobile/other-tab turn visible in this console.
+            try {
+              const rawContent = Array.isArray(payload.content)
+                ? (payload.content as Array<Record<string, unknown>>)
+                : [];
+              const text = rawContent
+                .map((c) => {
+                  const t = c?.text;
+                  return typeof t === "string" ? t : "";
+                })
+                .join("");
+              const content: Array<{
+                type: string;
+                [key: string]: unknown;
+              }> = rawContent
+                .filter(
+                  (c): c is { type: string; [key: string]: unknown } =>
+                    !!c && typeof c.type === "string" && c.type.length > 0,
+                )
+                .map((c) => {
+                  const item: { type: string; [key: string]: unknown } = {
+                    type: c.type,
+                  };
+                  for (const k of [
+                    "text",
+                    "image_url",
+                    "file_name",
+                    "file",
+                    "data",
+                  ]) {
+                    if (c[k] != null) item[k] = c[k];
+                  }
+                  return item;
+                });
+              const chatIdKey =
+                typeof payload.chat_id === "string" ? payload.chat_id : null;
+              if (chatIdKey && (text || content.length > 0)) {
+                sessionApi.setLastUserMessage(
+                  chatIdKey,
+                  text,
+                  content.length > 0 ? content : undefined,
+                  typeof payload.client_message_id === "string"
+                    ? payload.client_message_id
+                    : undefined,
+                );
+              }
+            } catch (err) {
+              console.warn(
+                "[user_message echo] failed to cache pending user message",
+                err,
+              );
+            }
+            return null;
+          }
+
           if (payload.type === "rate_limited") {
             const alts =
               (payload.alternatives as typeof rateLimitAlternatives) || [];

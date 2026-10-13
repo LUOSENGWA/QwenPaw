@@ -292,6 +292,7 @@ async def test_new_run_stream_leads_with_user_message_echo(
                 {
                     "role": "user",
                     "content": [{"type": "text", "text": "hello echo"}],
+                    "metadata": {"qwenpaw_client_message_id": "client-123"},
                 },
             ],
         },
@@ -311,6 +312,11 @@ async def test_new_run_stream_leads_with_user_message_echo(
     assert echo["type"] == "user_message"
     assert echo["content"][0]["type"] == "text"
     assert echo["content"][0]["text"] == "hello echo"
+    # Identity fields so a client without a local echo can key its
+    # pending user message (console) or correlate the turn (mobile).
+    assert echo["session_id"] == "console:default"
+    assert isinstance(echo["chat_id"], str) and echo["chat_id"]
+    assert echo["client_message_id"] == "client-123"
     # The run's own frames follow the echo, in order, with the payload
     # passed through unchanged.
     assert "data: assistant\n\n" in received[1:]

@@ -854,6 +854,66 @@ describe("ChatPage coverage", () => {
     }
   });
 
+  it("maps user_message echo frames into the pending user message cache", async () => {
+    renderWithProviders(<ChatPage />, {
+      initialEntries: ["/chat/test-session"],
+    });
+    await screen.findByTestId("chat-ui");
+
+    const sessionApiMock = (await import("./sessionApi")).default;
+    (sessionApiMock.setLastUserMessage as ReturnType<typeof vi.fn>).mockReset();
+    expect(capturedOptions?.api?.responseParser).toBeTruthy();
+    const parsed = capturedOptions!.api!.responseParser!(
+      JSON.stringify({
+        type: "user_message",
+        id: "echo-1",
+        content: [
+          {
+            type: "text",
+            text: "from the mobile app",
+            delta: false,
+            index: null,
+            status: null,
+            object: "content",
+            msg_id: null,
+          },
+        ],
+        chat_id: "chat-echo-test",
+        session_id: "console:default",
+        client_message_id: "client-echo-1",
+      }),
+    );
+    // Must never reach the SDK response builder — an unknown shape would
+    // route to its error path and fail the whole stream. null is a safe
+    // no-op; the frame feeds the pending user message cache instead so
+    // patchLastUserMessage renders the user card for attached views.
+    expect(parsed).toBeNull();
+    expect(sessionApiMock.setLastUserMessage).toHaveBeenCalledWith(
+      "chat-echo-test",
+      "from the mobile app",
+      [{ type: "text", text: "from the mobile app" }],
+      "client-echo-1",
+    );
+  });
+
+  it("ignores user_message echo frames without a usable chat_id or content", async () => {
+    renderWithProviders(<ChatPage />, {
+      initialEntries: ["/chat/test-session"],
+    });
+    await screen.findByTestId("chat-ui");
+
+    const sessionApiMock = (await import("./sessionApi")).default;
+    (sessionApiMock.setLastUserMessage as ReturnType<typeof vi.fn>).mockReset();
+    expect(capturedOptions?.api?.responseParser).toBeTruthy();
+    for (const frame of [
+      { type: "user_message", id: "x", content: [{ type: "text", text: "no chat id" }] },
+      { type: "user_message", id: "x", content: [], chat_id: "chat-x" },
+    ]) {
+      expect(capturedOptions!.api!.responseParser!(JSON.stringify(frame))).toBeNull();
+    }
+    expect(sessionApiMock.setLastUserMessage).not.toHaveBeenCalled();
+  });
+
   it("handles file upload via captured options", async () => {
     renderWithProviders(<ChatPage />, {
       initialEntries: ["/chat/test-session"],

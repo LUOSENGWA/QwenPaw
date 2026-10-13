@@ -356,12 +356,27 @@ def _is_reconnect_request(request_data: Union[AgentRequest, dict]) -> bool:
     return getattr(request_data, "reconnect", None) is True
 
 
-def _user_message_echo_sse(content_parts: list[Any]) -> Optional[str]:
+def _user_message_echo_sse(
+    content_parts: list[Any],
+    message_metadata: Any = None,
+    chat_id: str | None = None,
+    session_id: str | None = None,
+) -> Optional[str]:
     """Return the user's own content as a replayable SSE echo frame.
 
-    The frame has no ``object`` field, same shape as the ``turn_usage``
-    and ``replay_end`` frames: the console chat SDK and the React Native
-    client ignore stream frames they do not recognize.
+    The frame carries no ``object`` field, same shape as the
+    ``turn_usage`` and ``replay_end`` frames. Consumers must special-case
+    it: the console's responseParser maps it into the pending user
+    message cache (the SDK response builder routes any frame without a
+    recognized ``object`` to its error path, which fails the stream);
+    the React Native client is expected to ignore it (to be verified on
+    the RN side — the console assumption here was wrong once already).
+
+    ``chat_id`` / ``session_id`` / ``client_message_id`` let clients
+    without a local echo (mobile app, another tab) key their pending
+    user message: ``client_message_id`` — echoed back from the sending
+    client's request metadata when present — lets the console confirm
+    persistence by unique id instead of text.
     """
     items: list[Any] = []
     for part in content_parts:
@@ -375,11 +390,21 @@ def _user_message_echo_sse(content_parts: list[Any]) -> Optional[str]:
             items.append(part)
     if not items:
         return None
-    frame = {
+    frame: dict[str, Any] = {
         "type": "user_message",
         "id": uuid.uuid4().hex,
         "content": items,
     }
+    if chat_id:
+        frame["chat_id"] = chat_id
+    if session_id:
+        frame["session_id"] = session_id
+    if isinstance(message_metadata, dict):
+        client_message_id = str(
+            message_metadata.get("qwenpaw_client_message_id") or "",
+        )
+        if client_message_id:
+            frame["client_message_id"] = client_message_id
     return f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
 
 
@@ -529,6 +554,9 @@ async def post_console_chat(
         # is included in reconnect replay like every other frame.
         echo_frame = _user_message_echo_sse(
             native_payload.get("content_parts") or [],
+            message_metadata=native_payload.get("message_metadata"),
+            chat_id=chat.id,
+            session_id=(native_payload.get("meta") or {}).get("session_id"),
         )
 
         async def _stream_with_user_echo(
