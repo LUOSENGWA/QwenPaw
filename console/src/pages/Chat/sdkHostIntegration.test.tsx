@@ -62,6 +62,36 @@ const mockSdkHistoryLoad = vi.fn(async (id: string) => ({
 }));
 let observedSdkSessions: Array<{ agent: string; sessionId?: string }> = [];
 
+// #8203 auto-attach: the SDK shell mock publishes a fake execution
+// controller through the ref so the host resume() wiring is observable.
+// vi.hoisted: referenced from the hoisted vi.mock factories below.
+const {
+  mockResumeRun,
+  mockGetActiveRun,
+  mockExecutionController,
+  mockSdkBubble,
+} = vi.hoisted(() => {
+  const mockResumeRun = vi.fn(async () => ({ runId: "mock-run" }));
+  const mockGetActiveRun = vi.fn(async () => undefined);
+  const mockExecutionController = {
+    execute: vi.fn(),
+    cancel: vi.fn(),
+    resume: mockResumeRun,
+    getActiveRun: mockGetActiveRun,
+    subscribe: vi.fn(() => vi.fn()),
+  };
+  const mockSdkBubble = Object.assign(
+    vi.fn(() => null),
+    { Spin: vi.fn(() => null) },
+  );
+  return {
+    mockResumeRun,
+    mockGetActiveRun,
+    mockExecutionController,
+    mockSdkBubble,
+  };
+});
+
 // ---------------------------------------------------------------------------
 // Module mocks
 // ---------------------------------------------------------------------------
@@ -91,24 +121,52 @@ vi.mock("./components/ChatSessionInitializer", () => ({
   default: () => null,
 }));
 
-vi.mock("@agentscope-ai/chat", () => ({
-  AgentScopeRuntimeWebUI: vi.fn((props: any) => {
-    capturedOptions = props.options;
-    useEffect(() => {
-      const id = props.options?.session?.currentSessionId;
-      if (id) void props.options.session.api.getSession(id);
-    }, [props.options?.session?.api, props.options?.session?.currentSessionId]);
-    observedSdkSessions.push({
-      agent: mockSelectedAgent(),
-      sessionId: props.options?.session?.currentSessionId,
-    });
-    return (
-      <div data-testid="chat-ui">
-        {props.options?.theme?.rightHeader}
-        {props.options?.sender?.prefix}
-      </div>
-    );
-  }),
+vi.mock("@agentscope-ai/chat", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+  return {
+    AgentScopeRuntimeWebUI: React.forwardRef((props: any, ref: any) => {
+      capturedOptions = props.options;
+      // The real SDK publishes its controller via forwardRef; mirror that
+      // so the host's `chatRef.current.execution` wiring is observable.
+      if (ref && typeof ref === "object") {
+        ref.current = {
+          messages: {
+            data: [],
+            getMessages: vi.fn(() => []),
+            getSessionMessages: vi.fn(() => []),
+            setSessionMessages: vi.fn(),
+            replaceMessages: vi.fn(),
+            removeAllMessages: vi.fn(),
+          },
+          execution: mockExecutionController,
+          input: { setDisabled: vi.fn(), submit: vi.fn() },
+        };
+      }
+      React.useEffect(() => {
+        const id = props.options?.session?.currentSessionId;
+        if (id) void props.options.session.api.getSession(id);
+      }, [props.options?.session?.api, props.options?.session?.currentSessionId]);
+      observedSdkSessions.push({
+        agent: mockSelectedAgent(),
+        sessionId: props.options?.session?.currentSessionId,
+      });
+      return (
+        <div data-testid="chat-ui">
+          {props.options?.theme?.rightHeader}
+          {props.options?.sender?.prefix}
+        </div>
+      );
+    }),
+  Bubble: mockSdkBubble,
+  AgentScopeRuntimeContentType: {
+    TEXT: "text",
+    DATA: "data",
+    IMAGE: "image",
+    AUDIO: "audio",
+    VIDEO: "video",
+    FILE: "file",
+    REFUSAL: "refusal",
+  },
   useChatAnywhereSessionsState: vi.fn(() => ({
     sessions: [],
     currentSessionId: null,
@@ -116,16 +174,17 @@ vi.mock("@agentscope-ai/chat", () => ({
     setSessions: vi.fn(),
   })),
   useChatAnywhereSessions: vi.fn(() => ({ createSession: vi.fn() })),
-  useChatAnywhereInput: vi.fn((select: any) =>
-    select({
-      loading: mockSdkInput.loading,
-      setSessionLoading: mockSdkInput.setSessionLoading,
-      setLoading: vi.fn(),
-      getLoading: vi.fn(() => false),
-      setDisabled: vi.fn(),
-    }),
-  ),
-}));
+    useChatAnywhereInput: vi.fn((select: any) =>
+      select({
+        loading: mockSdkInput.loading,
+        setSessionLoading: mockSdkInput.setSessionLoading,
+        setLoading: vi.fn(),
+        getLoading: vi.fn(() => false),
+        setDisabled: vi.fn(),
+      }),
+    ),
+  };
+});
 
 vi.mock(
   "@agentscope-ai/chat/lib/AgentScopeRuntimeWebUI/core/Context/ChatAnywhereI18nContext",
@@ -169,6 +228,22 @@ vi.mock("@/api/config", () => ({
   getApiToken: vi.fn(() => ""),
 }));
 
+vi.mock("@/stores/sessionListStore", () => {
+  const makeState = () => ({ sessions: [] as Array<{ id?: string; realId?: string; status?: string }> });
+  const store = Object.assign(vi.fn((selector?: any) => {
+    const state = makeState();
+    return selector ? selector(state) : state;
+  }), {
+    subscribe: vi.fn(() => vi.fn()),
+    getState: vi.fn(makeState),
+    setState: vi.fn(),
+  });
+  return {
+    useSessionListStore: store,
+    syncSessionsGlobal: vi.fn(),
+  };
+});
+
 vi.mock("@/stores/agentStore", () => {
   const setLastChatId = vi.fn();
   const getLastChatId = vi.fn(() => null);
@@ -211,6 +286,7 @@ vi.mock("./sessionApi", () => ({
     getRealIdForSession: vi.fn(() => null),
     getBackendSessionId: vi.fn(() => "backend-session-1"),
     setLastUserMessage: vi.fn(),
+    peekPendingUserMessage: vi.fn(() => null),
     discardLastUserMessage: vi.fn(),
     setVisibleSession: vi.fn(),
     getSession: vi.fn(async (id: string) => ({ id, messages: [] })),
@@ -518,6 +594,14 @@ vi.mock("./HostBubbles", () => ({
 
 vi.mock("./components/ChatSessionDrawer", () => ({
   default: () => null,
+}));
+
+vi.mock("./components/UserEchoBubble", () => ({
+  default: ({ data }: { data: { id?: string; content?: Array<{ text?: string }> } }) => (
+    <div data-testid="user-echo-bubble">
+      {(data.content ?? []).map((c, i) => c.text).join("")}
+    </div>
+  ),
 }));
 
 vi.mock("../../plugins/registry/PluginSlotBoundary", () => ({
@@ -854,7 +938,7 @@ describe("ChatPage coverage", () => {
     }
   });
 
-  it("maps user_message echo frames into the pending user message cache", async () => {
+  it("projects a foreign user_message echo into the stream as a user_echo frame", async () => {
     renderWithProviders(<ChatPage />, {
       initialEntries: ["/chat/test-session"],
     });
@@ -862,6 +946,10 @@ describe("ChatPage coverage", () => {
 
     const sessionApiMock = (await import("./sessionApi")).default;
     (sessionApiMock.setLastUserMessage as ReturnType<typeof vi.fn>).mockReset();
+    (sessionApiMock.peekPendingUserMessage as ReturnType<typeof vi.fn>).mockReset();
+    (sessionApiMock.peekPendingUserMessage as ReturnType<typeof vi.fn>).mockReturnValue(
+      null,
+    );
     expect(capturedOptions?.api?.responseParser).toBeTruthy();
     const parsed = capturedOptions!.api!.responseParser!(
       JSON.stringify({
@@ -883,17 +971,73 @@ describe("ChatPage coverage", () => {
         client_message_id: "client-echo-1",
       }),
     );
-    // Must never reach the SDK response builder — an unknown shape would
-    // route to its error path and fail the whole stream. null is a safe
-    // no-op; the frame feeds the pending user message cache instead so
-    // patchLastUserMessage renders the user card for attached views.
-    expect(parsed).toBeNull();
+    // The raw frame (no `object`) must never reach the SDK response
+    // builder — it routes unknown shapes to its error path and fails the
+    // stream. For a turn started by ANOTHER client (no pending entry from
+    // this view's own submission) the parser projects it inline as a
+    // `user_echo` message frame, rendered by the `response.render` slot.
+    expect(parsed).toEqual({
+      object: "message",
+      id: "echo-1",
+      type: "user_echo",
+      role: "user",
+      status: "completed",
+      content: [{ type: "text", text: "from the mobile app" }],
+    });
     expect(sessionApiMock.setLastUserMessage).toHaveBeenCalledWith(
       "chat-echo-test",
       "from the mobile app",
       [{ type: "text", text: "from the mobile app" }],
       "client-echo-1",
     );
+  });
+
+  it("suppresses the inline echo for a turn submitted from this console", async () => {
+    renderWithProviders(<ChatPage />, {
+      initialEntries: ["/chat/test-session"],
+    });
+    await screen.findByTestId("chat-ui");
+
+    const sessionApiMock = (await import("./sessionApi")).default;
+    // This tab's own submission already cached the same client id; the
+    // user card is rendered via the history patch, so the stream must NOT
+    // also carry a user_echo frame (would double-render the bubble).
+    (
+      sessionApiMock.peekPendingUserMessage as ReturnType<typeof vi.fn>
+    ).mockReturnValue({
+      text: "sent from this console",
+      clientMessageId: "client-own-1",
+    });
+    const parsed = capturedOptions!.api!.responseParser!(
+      JSON.stringify({
+        type: "user_message",
+        id: "echo-own",
+        content: [{ type: "text", text: "sent from this console" }],
+        chat_id: "chat-own-test",
+        client_message_id: "client-own-1",
+      }),
+    );
+    expect(parsed).toBeNull();
+  });
+
+  it("suppresses the inline echo when the cached text matches (no client id)", async () => {
+    renderWithProviders(<ChatPage />, {
+      initialEntries: ["/chat/test-session"],
+    });
+    await screen.findByTestId("chat-ui");
+    const sessionApiMock = (await import("./sessionApi")).default;
+    (
+      sessionApiMock.peekPendingUserMessage as ReturnType<typeof vi.fn>
+    ).mockReturnValue({ text: "same words typed here" });
+    const parsed = capturedOptions!.api!.responseParser!(
+      JSON.stringify({
+        type: "user_message",
+        id: "echo-t",
+        content: [{ type: "text", text: "same words typed here" }],
+        chat_id: "chat-text-test",
+      }),
+    );
+    expect(parsed).toBeNull();
   });
 
   it("ignores user_message echo frames without a usable chat_id or content", async () => {
@@ -912,6 +1056,135 @@ describe("ChatPage coverage", () => {
       expect(capturedOptions!.api!.responseParser!(JSON.stringify(frame))).toBeNull();
     }
     expect(sessionApiMock.setLastUserMessage).not.toHaveBeenCalled();
+  });
+
+  it("renders user_echo frames via the response.render slot and keeps fallback for normal turns", async () => {
+    renderWithProviders(<ChatPage />, {
+      initialEntries: ["/chat/test-session"],
+    });
+    await screen.findByTestId("chat-ui");
+    const render = capturedOptions?.response?.render;
+    expect(typeof render).toBe("function");
+
+    // No user_echo frames → straight fallback (host card / default). The
+    // sentinel returns a STABLE element so identity checks are meaningful.
+    const fallbackSentinel = <div data-testid="fb" />;
+    const fallback = () => fallbackSentinel;
+    expect(render({ data: { id: "r1", output: [] }, fallback } as any)).toBe(fallbackSentinel);
+    expect(render({
+      data: {
+        id: "r2",
+        status: "in_progress",
+        output: [{ id: "m1", role: "assistant", type: "message", content: [{ type: "text", text: "hi" }] }],
+      },
+      fallback,
+    } as any)).toBe(fallbackSentinel);
+
+    // user_echo frame before any assistant content → user bubble + spinner
+    // (NOT the assistant fallback).
+    const tree = render({
+      data: {
+        id: "r3",
+        status: "in_progress",
+        output: [
+          {
+            id: "echo-a",
+            role: "user",
+            type: "user_echo",
+            status: "completed",
+            content: [{ type: "text", text: "from mobile" }],
+          },
+        ],
+      },
+      fallback,
+    } as any);
+    expect(tree).not.toBe(fallbackSentinel);
+
+    // user_echo frame alongside assistant content → bubble + fallback.
+    const tree2 = render({
+      data: {
+        id: "r4",
+        status: "in_progress",
+        output: [
+          {
+            id: "echo-b",
+            role: "user",
+            type: "user_echo",
+            status: "completed",
+            content: [{ type: "text", text: "from tab 2" }],
+          },
+          { id: "m2", role: "assistant", type: "message", content: [{ type: "text", text: "answering" }] },
+        ],
+      },
+      fallback,
+    } as any);
+    expect(tree2).not.toBe(fallbackSentinel);
+  });
+
+  it("auto-attaches to a running chat via execution.resume when polled status flips to running", async () => {
+    mockResumeRun.mockClear();
+    mockGetActiveRun.mockClear();
+    mockGetActiveRun.mockResolvedValue(undefined);
+    const { useSessionListStore: store } = await import("@/stores/sessionListStore");
+    let sessions: Array<{ id?: string; realId?: string; status?: string }> = [];
+    const listeners = new Set<() => void>();
+    let revision = 0;
+    const setSessions = (next: typeof sessions) => {
+      sessions = next;
+      revision += 1;
+      listeners.forEach((l) => l());
+    };
+    const originalHook = vi.mocked(store).getMockImplementation()!;
+    vi.mocked(store).mockImplementation((selector?: any) => {
+      useSyncExternalStore(
+        (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        () => revision,
+      );
+      const state = { sessions };
+      return selector ? selector(state) : state;
+    });
+    try {
+      // Must be a UUID — resolveBackendChatId rejects bare string ids.
+      const chatId = "75590000-0000-4000-8000-0000000000a1";
+      renderWithProviders(<ChatPage />, {
+        initialEntries: [`/chat/${chatId}`],
+      });
+      await screen.findByTestId("chat-ui");
+      // Not running yet — no attach.
+      await act(async () => {});
+      expect(mockResumeRun).not.toHaveBeenCalled();
+
+      // Poll flips the chat to running → host attaches.
+      await act(async () => {
+        setSessions([{ id: chatId, status: "running" }]);
+      });
+      await waitFor(() =>
+        expect(mockResumeRun).toHaveBeenCalledWith({ sessionId: chatId }),
+      );
+
+      // An active run exists → no re-attach.
+      mockResumeRun.mockClear();
+      mockGetActiveRun.mockResolvedValue({ runId: "live-run" } as any);
+      await act(async () => {
+        setSessions([{ id: chatId, status: "running" }]);
+      });
+      await act(async () => {});
+      expect(mockResumeRun).not.toHaveBeenCalled();
+
+      // Idle again → still no attach.
+      mockGetActiveRun.mockResolvedValue(undefined);
+      await act(async () => {
+        setSessions([{ id: chatId, status: "idle" }]);
+      });
+      await act(async () => {});
+      expect(mockResumeRun).not.toHaveBeenCalled();
+    } finally {
+      vi.mocked(store).mockImplementation(originalHook);
+      mockGetActiveRun.mockResolvedValue(undefined);
+    }
   });
 
   it("handles file upload via captured options", async () => {
