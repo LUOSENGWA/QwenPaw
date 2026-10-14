@@ -1358,24 +1358,58 @@ export default function ChatPage() {
   // resume the run so its SSE stream — including the leading user-message
   // echo frame — reaches the response parser and renders in real time.
   // Without this, an attached view stayed stale until a manual refresh.
-  // resume() is idempotent: if a run lifecycle already exists for the
-  // session it is returned instead of re-attaching, so the 3s re-trigger
-  // is safe.
+  //
+  // Guards (all must pass before attaching):
+  //  1. Rising edge only. Resume on the first "running" tick after an
+  //     idle (or first-observed) tick, never on repeated "running"
+  //     ticks. A run THIS tab just finished locally settles its stream
+  //     up to one poll interval before the sidebar flips back to
+  //     "idle"; resuming during that stale window opens a SECOND stream
+  //     into the same message store and strands an orphaned assistant
+  //     message stuck in "generating" — the three-dot spinner that
+  //     never clears until a manual refresh. A foreign run still
+  //     produces exactly one rising edge here.
+  //  2. getActiveRun — a live SDK run lifecycle for this chat means the
+  //     view is already attached (or owns) the run; resume() would be a
+  //     duplicate.
+  //  3. The SDK's findGeneratingResponse predicate over the active
+  //     messages — for a run submitted from this tab on a freshly
+  //     created chat the lifecycle is keyed by the draft session id
+  //     that predates the chat UUID, so check 2 misses on the UUID; a
+  //     generating assistant message in the active list means this tab
+  //     is already streaming the run.
   const polledSessions = useSessionListStore((s) => s.sessions);
+  const autoAttachStatusRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
     if (!backendChatId) return;
+    const statusMap = autoAttachStatusRef.current;
+    if (statusMap.size > 100) statusMap.clear();
     const current = polledSessions.find(
       (s) => s.id === backendChatId || s.realId === backendChatId,
     );
-    if (current?.status !== "running") return;
+    const status: string | undefined = current?.status;
+    const previous = statusMap.get(backendChatId);
+    statusMap.set(backendChatId, status ?? "unknown");
+    if (status !== "running") return;
+    if (previous === "running") return;
     void (async () => {
       const ctrl = chatRef.current?.execution;
       if (!ctrl) return;
       try {
         if (await ctrl.getActiveRun(backendChatId)) return;
+        const activeMessages =
+          chatRef.current?.messages?.getMessages?.() ?? [];
+        const alreadyGenerating = Array.isArray(activeMessages) &&
+          activeMessages.some(
+            (m) =>
+              (m as { role?: string })?.role === "assistant" &&
+              (m as { msgStatus?: string })?.msgStatus === "generating",
+          );
+        if (alreadyGenerating) return;
         await ctrl.resume({ sessionId: backendChatId });
       } catch {
-        // Transient failure — the next poll tick retries.
+        // Transient failure — the next rising edge retries; repeating
+        // resume() on every tick would re-trigger the double-attach.
       }
     })();
   }, [backendChatId, polledSessions]);
@@ -3978,7 +4012,7 @@ export default function ChatPage() {
         const output = data.output ?? [];
         const userEchoes = output.filter(
           (m): m is IAgentScopeRuntimeMessage =>
-            m.role === "user" && m.type === "user_echo",
+            m.role === "user" && (m.type as string) === "user_echo",
         );
         if (userEchoes.length === 0) return fallback();
         const hasAssistantContent = output.some(
@@ -4452,6 +4486,14 @@ export default function ChatPage() {
                 typeof payload.client_message_id === "string"
                   ? payload.client_message_id
                   : undefined;
+              // Read the pending entry BEFORE this frame writes its own:
+              // setLastUserMessage below stores the frame's client id, so
+              // peaking after the write would make even a foreign frame
+              // look like this tab's own submission (the only echo of the
+              // run gets suppressed and the bubble never appears).
+              const pending = chatIdKey
+                ? sessionApi.peekPendingUserMessage(chatIdKey)
+                : null;
               if (chatIdKey && (text || content.length > 0)) {
                 sessionApi.setLastUserMessage(
                   chatIdKey,
@@ -4461,7 +4503,6 @@ export default function ChatPage() {
                 );
               }
               if (chatIdKey && (text || content.length > 0)) {
-                const pending = sessionApi.peekPendingUserMessage(chatIdKey);
                 // Own submission: this tab's submission path already cached
                 // the same client id before the POST, and the history patch
                 // renders the user card — putting the frame into the stream

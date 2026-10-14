@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, waitFor, act } from "@testing-library/react";
-import { useSyncExternalStore, useEffect } from "react";
+import { useSyncExternalStore } from "react";
 import { useNavigate } from "react-router-dom";
 import { renderWithProviders } from "@/test/common_setup";
 import ChatPage from "./index";
@@ -35,6 +35,7 @@ const {
   mockBeginLoopModeSubmission,
   mockRequiresQwenPawModel,
   mockSdkInput,
+  pendingUserMessageStore,
 } = vi.hoisted(() => ({
   mockListProviders: vi.fn(),
   mockGetActiveModels: vi.fn(),
@@ -52,6 +53,14 @@ const {
   mockBeginLoopModeSubmission: vi.fn((text: string) => text),
   mockRequiresQwenPawModel: vi.fn(() => true),
   mockSdkInput: { loading: false, setSessionLoading: vi.fn() },
+  // #8203: the real setLastUserMessage/peekPendingUserMessage share one
+  // localStorage-backed store. Mirror that coupling here — the parser must
+  // peek BEFORE it writes its own entry, otherwise even a foreign echo
+  // looks like this tab's own submission and gets suppressed.
+  pendingUserMessageStore: new Map<
+    string,
+    { text: string; content?: unknown[]; clientMessageId?: string }
+  >(),
 }));
 
 let capturedOptions: any = null;
@@ -285,8 +294,20 @@ vi.mock("./sessionApi", () => ({
     })),
     getRealIdForSession: vi.fn(() => null),
     getBackendSessionId: vi.fn(() => "backend-session-1"),
-    setLastUserMessage: vi.fn(),
-    peekPendingUserMessage: vi.fn(() => null),
+    // Shared pending store (see vi.hoisted): mirrors the real
+    // setLastUserMessage/peekPendingUserMessage localStorage coupling so a
+    // peek-after-write ordering bug in the parser is caught by tests.
+    setLastUserMessage: vi.fn((id: string, text: string, content?: unknown, clientId?: string) => {
+      pendingUserMessageStore.set(id, {
+        text,
+        content: content as unknown[],
+        clientMessageId: clientId,
+      });
+    }),
+    peekPendingUserMessage: vi.fn((id: string) => {
+      const e = pendingUserMessageStore.get(id);
+      return e ? { text: e.text, clientMessageId: e.clientMessageId } : null;
+    }),
     discardLastUserMessage: vi.fn(),
     setVisibleSession: vi.fn(),
     getSession: vi.fn(async (id: string) => ({ id, messages: [] })),
@@ -599,7 +620,7 @@ vi.mock("./components/ChatSessionDrawer", () => ({
 vi.mock("./components/UserEchoBubble", () => ({
   default: ({ data }: { data: { id?: string; content?: Array<{ text?: string }> } }) => (
     <div data-testid="user-echo-bubble">
-      {(data.content ?? []).map((c, i) => c.text).join("")}
+      {(data.content ?? []).map((c) => c.text).join("")}
     </div>
   ),
 }));
@@ -666,6 +687,7 @@ describe("ChatPage coverage", () => {
     mockSelectedAgent.mockReturnValue("default");
     mockOwnershipState.acquire = true;
     mockCopyText.mockClear();
+    pendingUserMessageStore.clear();
     mockBeginLoopModeSubmission.mockReset();
     mockBeginLoopModeSubmission.mockImplementation((text: string) => text);
     mockRequiresQwenPawModel.mockReset();
@@ -946,10 +968,11 @@ describe("ChatPage coverage", () => {
 
     const sessionApiMock = (await import("./sessionApi")).default;
     (sessionApiMock.setLastUserMessage as ReturnType<typeof vi.fn>).mockReset();
-    (sessionApiMock.peekPendingUserMessage as ReturnType<typeof vi.fn>).mockReset();
-    (sessionApiMock.peekPendingUserMessage as ReturnType<typeof vi.fn>).mockReturnValue(
-      null,
-    );
+    // Shared pending store starts empty (see beforeEach) → peek returns
+    // null → the parser must treat this as a FOREIGN turn and project the
+    // frame inline. Crucially it must peek BEFORE setLastUserMessage
+    // writes the frame's own client id (regression: peek-after-write made
+    // every foreign echo look like this tab's own submission).
     expect(capturedOptions?.api?.responseParser).toBeTruthy();
     const parsed = capturedOptions!.api!.responseParser!(
       JSON.stringify({
@@ -998,13 +1021,11 @@ describe("ChatPage coverage", () => {
     });
     await screen.findByTestId("chat-ui");
 
-    const sessionApiMock = (await import("./sessionApi")).default;
     // This tab's own submission already cached the same client id; the
     // user card is rendered via the history patch, so the stream must NOT
-    // also carry a user_echo frame (would double-render the bubble).
-    (
-      sessionApiMock.peekPendingUserMessage as ReturnType<typeof vi.fn>
-    ).mockReturnValue({
+    // also carry a user_echo frame (would double-render the bubble). Seed
+    // the shared store the way the real submission path does.
+    pendingUserMessageStore.set("chat-own-test", {
       text: "sent from this console",
       clientMessageId: "client-own-1",
     });
@@ -1025,10 +1046,11 @@ describe("ChatPage coverage", () => {
       initialEntries: ["/chat/test-session"],
     });
     await screen.findByTestId("chat-ui");
-    const sessionApiMock = (await import("./sessionApi")).default;
-    (
-      sessionApiMock.peekPendingUserMessage as ReturnType<typeof vi.fn>
-    ).mockReturnValue({ text: "same words typed here" });
+    // Cached text matches and the frame carries no client id → text-match
+    // path treats it as this tab's own turn. Seed the shared store.
+    pendingUserMessageStore.set("chat-text-test", {
+      text: "same words typed here",
+    });
     const parsed = capturedOptions!.api!.responseParser!(
       JSON.stringify({
         type: "user_message",
